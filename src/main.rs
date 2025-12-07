@@ -37,7 +37,7 @@ impl Side {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Piece {
     Man,
     Empty,
@@ -195,26 +195,30 @@ impl Board {
         for direction in Direction::ALL {
             let delta = direction.delta();
             let mut jump_length = 0;
-            let mut end_point;
 
             // Find how far we can jump in this direction
-            loop {
+            let end_point = loop {
                 jump_length += 1;
-                end_point = match self.ball_at.checked_add((delta.0 * jump_length, delta.1 * jump_length)) {
+                let potential_end = match self.ball_at.checked_add((delta.0 * jump_length, delta.1 * jump_length)) {
                     Some(p) => p,
-                    None => break,
+                    None => break None,
                 };
 
                 // If we're on the board and hit a non-man, stop
-                if end_point.is_on_board() && self.get(end_point) != Piece::Man {
-                    break;
+                if potential_end.is_on_board() && self.get(potential_end) != Piece::Man {
+                    break Some(potential_end);
                 }
 
                 // If we went off the board, stop
-                if !end_point.is_on_board() {
-                    break;
+                if !potential_end.is_on_board() {
+                    break Some(potential_end);
                 }
-            }
+            };
+
+            let end_point = match end_point {
+                Some(p) => p,
+                None => continue,
+            };
 
             // Need at least one man to jump over
             if jump_length <= 1 {
