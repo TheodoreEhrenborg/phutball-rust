@@ -53,6 +53,12 @@ fn run_game(left_player: Box<dyn Player>, right_player: Box<dyn Player>) {
     let mut board = Board::new();
     let players = [left_player, right_player];
 
+    // Print game setup before first move
+    println!("=== Phutball Game ===");
+    println!("Left tries to get the ball to the RIGHT (column 19)");
+    println!("Right tries to get the ball to the LEFT (column 1)");
+    println!("Left plays first.\n");
+
     loop {
         board.pretty_print_details();
 
@@ -63,12 +69,15 @@ fn run_game(left_player: Box<dyn Player>, right_player: Box<dyn Player>) {
         }
 
         let player_idx = board.moves_made as usize % 2;
+        let current_side = board.side_to_move;
+
         let player_move = players[player_idx].make_move(&board);
 
         // Validate and execute move
         let moves = board.get_all_moves();
         match moves.get(&player_move) {
             Some(new_board) => {
+                println!("\n>>> {:?} played: {}\n", current_side, player_move.trim());
                 board = new_board.clone();
             }
             None => {
