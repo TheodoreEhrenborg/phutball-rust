@@ -42,17 +42,23 @@ fn parse_player(spec: &str) -> Box<dyn Player> {
     match player_type {
         "human" => Box::new(HumanPlayer),
         "minimax" => {
-            let depth = if parts.len() > 1 {
-                parts[1].parse().unwrap_or(2)
-            } else {
-                2
+            if parts.len() < 2 {
+                eprintln!("Error: minimax requires depth specification (e.g., minimax:3)");
+                std::process::exit(1);
+            }
+            let depth = match parts[1].parse::<u32>() {
+                Ok(d) if d > 0 => d,
+                _ => {
+                    eprintln!("Error: minimax depth must be a positive integer");
+                    std::process::exit(1);
+                }
             };
             Box::new(MinimaxPlayer::new(depth))
         }
         "plodding" => Box::new(PloddingPlayer),
         _ => {
             eprintln!("Unknown player type: {}", player_type);
-            eprintln!("Valid types: human, minimax[:depth], plodding");
+            eprintln!("Valid types: human, minimax:DEPTH, plodding");
             std::process::exit(1);
         }
     }
