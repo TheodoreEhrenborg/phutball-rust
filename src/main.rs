@@ -338,37 +338,42 @@ impl Board {
 
             // Find how far we can jump - keep going while we see men
             let mut jump_length = 1;
-            let end_point = loop {
-                let next_pos = match self.ball_at.checked_add((delta.0 * (jump_length + 1), delta.1 * (jump_length + 1))) {
-                    Some(p) => p,
-                    None => {
-                        // We've gone off the edge
-                        break self.ball_at.checked_add((delta.0 * (jump_length + 1), delta.1 * (jump_length + 1)));
+            let (end_row, end_col): (i32, i32) = loop {
+                let new_row = self.ball_at.row as i32 + delta.0 * (jump_length + 1);
+                let new_col = self.ball_at.col as i32 + delta.1 * (jump_length + 1);
+
+                // Check if we're still in valid positive coordinates to check for more men
+                if new_row >= 0 && new_col >= 0 {
+                    let next_pos = Position::new(new_row as usize, new_col as usize);
+                    if next_pos.is_on_board() && self.get(next_pos) == Piece::Man {
+                        // Continue jumping over consecutive men
+                        jump_length += 1;
+                        continue;
                     }
-                };
-
-                if next_pos.is_on_board() && self.get(next_pos) == Piece::Man {
-                    // Continue jumping over consecutive men
-                    jump_length += 1;
-                } else {
-                    // Stop here - either off board or not a man
-                    break Some(next_pos);
                 }
+
+                // We've either gone off the edge or found an empty/ball square
+                break (new_row, new_col);
             };
 
-            let end_point = match end_point {
-                Some(p) => p,
-                None => continue,
-            };
+            // Check if we jumped off the board via col (into goal)
+            let jumped_off_col = end_col < 0 || end_col >= LENGTH as i32;
 
-            // Check if we jumped off the board illegally
-            // Legal only if we jumped over a man on the goal line (col 0 or LENGTH-1)
-            if !end_point.is_on_board() {
-                let last_man_pos = self.ball_at.checked_add((delta.0 * jump_length, delta.1 * jump_length)).unwrap();
-                if last_man_pos.col != 0 && last_man_pos.col != LENGTH - 1 {
-                    continue;
-                }
+            // Check if we jumped off the board via row
+            let jumped_off_row = end_row < 0 || end_row >= WIDTH as i32;
+
+            // If we jumped off via row only (not col), that's illegal
+            // But if we jumped off via col (with or without row), that's a goal
+            if jumped_off_row && !jumped_off_col {
+                continue;
             }
+
+            let jumped_into_goal = jumped_off_col;
+
+            let end_point = Position::new(
+                end_row.max(0) as usize,
+                end_col.max(0) as usize
+            );
 
             // Make the jump
             let mut new_board = self.clone();
@@ -385,8 +390,8 @@ impl Board {
             // Clear the starting position
             new_board.set(self.ball_at, Piece::Empty);
 
-            // Place ball at destination (if on board)
-            if end_point.is_on_board() {
+            // Place ball at destination (if still on board, not jumped into goal)
+            if !jumped_into_goal {
                 new_board.set(end_point, Piece::Ball);
             }
             new_board.ball_at = end_point;
@@ -400,8 +405,11 @@ impl Board {
             };
             moves.insert(move_name.clone(), final_board);
 
-            // Recursively find continuation jumps
-            new_board.get_ball_moves_recursive(moves, move_name);
+            // Recursively find continuation jumps (but not if we landed on a goal col - that's a victory)
+            let landed_on_goal_col = end_point.col == 0 || end_point.col == LENGTH - 1;
+            if !jumped_into_goal && !landed_on_goal_col {
+                new_board.get_ball_moves_recursive(moves, move_name);
+            }
         }
     }
 
@@ -856,5 +864,161 @@ mod tests {
 
         // Total: should only have the one jump west
         assert_eq!(ball_moves.len(), 1, "Should only have 1 jump move");
+    }
+
+    #[test]
+    fn test_multijump_stops_at_goal_col() {
+        // If a multijump would land on a goal column (col 0 or LENGTH-1),
+        // the move should stop there - no further jumps allowed
+        let mut board = Board::new();
+        board.set(board.ball_at, Piece::Empty);
+
+        // Ball at col 3, men at col 2 and col 0 (goal line)
+        // After first jump W, ball lands at col 1
+        // After second jump W, ball lands at col 0 (goal line) - this should be a victory, no more jumps
+        let ball_pos = Position::new(7, 3);
+        board.ball_at = ball_pos;
+        board.set(ball_pos, Piece::Ball);
+
+        // Man to jump over to reach col 1
+        board.set(Position::new(7, 2), Piece::Man);
+        // Man at col 0 to potentially jump over (but shouldn't - col 0 is goal)
+        board.set(Position::new(7, 0), Piece::Man);
+
+        let ball_moves = board.get_ball_moves();
+
+        // Should have "W " move that lands at col 1
+        assert!(ball_moves.contains_key("W "), "Should have W jump");
+        let after_w = &ball_moves["W "];
+        assert_eq!(after_w.ball_at.col, 1);
+
+        // Should NOT have "W W " move - can't continue jumping after landing at col 1
+        // because the next jump would land on col 0 (goal), and that's the end
+        // Actually, we CAN jump to col 0, but we can't jump AWAY from col 0
+
+        // Let's set up differently: ball at col 2, man at col 1, man at col 0
+        // Jump W lands at col 0 (goal) - game over, no more jumps
+        let mut board2 = Board::new();
+        board2.set(board2.ball_at, Piece::Empty);
+
+        let ball_pos2 = Position::new(7, 2);
+        board2.ball_at = ball_pos2;
+        board2.set(ball_pos2, Piece::Ball);
+
+        board2.set(Position::new(7, 1), Piece::Man);
+        // Man that could be jumped if we could continue from col 0
+        board2.set(Position::new(6, 0), Piece::Man);
+
+        let ball_moves2 = board2.get_ball_moves();
+
+        // Should have "W " that lands at col 0
+        assert!(ball_moves2.contains_key("W "), "Should have W jump to goal col");
+        let after_w2 = &ball_moves2["W "];
+        assert_eq!(after_w2.ball_at.col, 0, "Should land on goal col");
+
+        // Should NOT have any continuation jumps from col 0 (like "W NE " or "W SE ")
+        assert!(!ball_moves2.contains_key("W NE "), "Should not continue from goal col");
+        assert!(!ball_moves2.contains_key("W SE "), "Should not continue from goal col");
+        assert!(!ball_moves2.contains_key("W NW "), "Should not continue from goal col");
+        assert!(!ball_moves2.contains_key("W SW "), "Should not continue from goal col");
+    }
+
+    #[test]
+    fn test_diagonal_jump_into_goal() {
+        // Jumping diagonally off both row and col boundaries should be legal (a goal)
+        let mut board = Board::new();
+        board.set(board.ball_at, Piece::Empty);
+
+        // Ball at row 0, col 1. Man at row 0, col 0 (corner).
+        // Jumping SW would go to row 1, col -1 (off col = goal)
+        // But wait, SW is (1, -1) so from (0, 1) we'd go to (1, 0) then check (2, -1)
+        // Actually let's think more carefully...
+
+        // Let's put ball at corner: row 0, col 1
+        // Man at row 0, col 0
+        // Jump W goes to row 0, col -1 (goal, but row stays valid)
+
+        // For a true diagonal-off-both test:
+        // Ball at row 1, col 1
+        // Man at row 0, col 0
+        // Jump NW: delta is (-1, -1), so end would be row -1, col -1
+        // This should be a legal goal (col is off, row is also off but that's ok)
+
+        let ball_pos = Position::new(1, 1);
+        board.ball_at = ball_pos;
+        board.set(ball_pos, Piece::Ball);
+
+        // Man at corner (0, 0)
+        board.set(Position::new(0, 0), Piece::Man);
+
+        let ball_moves = board.get_ball_moves();
+
+        // Should be able to jump NW into the goal
+        assert!(ball_moves.contains_key("NW "), "Should have NW diagonal jump into goal");
+
+        let jumped = &ball_moves["NW "];
+        // Ball should be off-board (clamped to 0,0 but conceptually off)
+        assert!(jumped.ball_at.col == 0, "Ball col should be clamped to 0");
+
+        // The man should be cleared
+        assert_eq!(jumped.get(Position::new(0, 0)), Piece::Empty, "Man should be cleared");
+    }
+
+    #[test]
+    fn test_no_jump_off_row_only() {
+        // Jumping off the board via row only (not col) should be illegal
+        let mut board = Board::new();
+        board.set(board.ball_at, Piece::Empty);
+
+        // Ball at row 1, col 5 (middle of board horizontally)
+        // Man at row 0, col 5
+        // Jumping N would go to row -1, col 5 - illegal (off row, not off col)
+        let ball_pos = Position::new(1, 5);
+        board.ball_at = ball_pos;
+        board.set(ball_pos, Piece::Ball);
+
+        board.set(Position::new(0, 5), Piece::Man);
+
+        let ball_moves = board.get_ball_moves();
+
+        // Should NOT be able to jump north off the board
+        assert!(!ball_moves.contains_key("N "), "Should not be able to jump off north edge");
+    }
+
+    #[test]
+    fn test_no_jump_sequence_through_goal() {
+        // A single jump that passes through a goal line position should stop there
+        // This tests the "can't jump off board and back on" rule
+        // In practice, this can't happen with a normal board (you can't be beyond the goal),
+        // but we verify the consecutive-men jump logic doesn't somehow skip past the goal
+
+        let mut board = Board::new();
+        board.set(board.ball_at, Piece::Empty);
+
+        // Ball at col 2, men at col 1 AND col 0 (consecutive)
+        // Jumping W over both should land at col -1 (off board = goal)
+        // We should NOT somehow continue and land back on the board
+        let ball_pos = Position::new(7, 2);
+        board.ball_at = ball_pos;
+        board.set(ball_pos, Piece::Ball);
+
+        board.set(Position::new(7, 1), Piece::Man);
+        board.set(Position::new(7, 0), Piece::Man);
+
+        let ball_moves = board.get_ball_moves();
+
+        // Should have W jump that clears both men and goes to goal
+        assert!(ball_moves.contains_key("W "), "Should have W jump");
+        let after_w = &ball_moves["W "];
+
+        // Ball should be at col 0 (clamped from -1)
+        assert_eq!(after_w.ball_at.col, 0, "Ball should be at goal");
+
+        // Both men should be cleared
+        assert_eq!(after_w.get(Position::new(7, 1)), Piece::Empty, "First man cleared");
+        assert_eq!(after_w.get(Position::new(7, 0)), Piece::Empty, "Second man cleared");
+
+        // Ball should NOT be placed on the board (it's in the goal)
+        assert_eq!(after_w.get(Position::new(7, 0)), Piece::Empty, "Ball not placed at col 0");
     }
 }
