@@ -816,4 +816,45 @@ mod tests {
         assert_eq!(double_jump.ball_at.row, START_ROW - 2);
         assert_eq!(double_jump.ball_at.col, START_COL + 4);
     }
+
+    #[test]
+    fn test_jump_into_goal() {
+        // Ball at A2 (row 0, col 1), man at A1 (row 0, col 0)
+        let mut board = Board::new();
+        // Clear the starting position
+        board.set(board.ball_at, Piece::Empty);
+
+        // Place ball at A2
+        let ball_pos = Position::new(0, 1);
+        board.ball_at = ball_pos;
+        board.set(ball_pos, Piece::Ball);
+
+        // Place man at A1 (in the left goal line)
+        let man_pos = Position::new(0, 0);
+        board.set(man_pos, Piece::Man);
+
+        let ball_moves = board.get_ball_moves();
+
+        // Should be able to jump west over the man into the goal
+        assert!(ball_moves.contains_key("W "), "Should have W jump");
+
+        // After jumping west, ball should be off the board (col -1 or 0)
+        let jumped = &ball_moves["W "];
+        assert!(jumped.ball_at.col <= 0 || !jumped.ball_at.is_on_board());
+
+        // The man should be cleared
+        assert_eq!(jumped.get(man_pos), Piece::Empty);
+
+        // Should not be able to jump in other directions (no men there)
+        assert!(!ball_moves.contains_key("E "), "Should not have E jump");
+        assert!(!ball_moves.contains_key("N "), "Should not have N jump");
+        assert!(!ball_moves.contains_key("S "), "Should not have S jump");
+        assert!(!ball_moves.contains_key("NE "), "Should not have NE jump");
+        assert!(!ball_moves.contains_key("NW "), "Should not have NW jump");
+        assert!(!ball_moves.contains_key("SE "), "Should not have SE jump");
+        assert!(!ball_moves.contains_key("SW "), "Should not have SW jump");
+
+        // Total: should only have the one jump west
+        assert_eq!(ball_moves.len(), 1, "Should only have 1 jump move");
+    }
 }
