@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::io::{self, Write};
 
 const LENGTH: usize = 19;
 const WIDTH: usize = 15;
@@ -11,14 +12,70 @@ const WHITE_CIRCLE: char = '○';
 const BLACK_CIRCLE: char = '●';
 
 fn main() {
-    let board = Board::new();
-    board.pretty_print_details();
+    let args: Vec<String> = std::env::args().collect();
 
-    // Test move generation
-    let moves = board.get_all_moves();
-    println!("\nAvailable moves: {}", moves.len());
-    for (i, (name, _)) in moves.iter().enumerate().take(5) {
-        println!("  {}: {}", i + 1, name);
+    if args.len() < 3 {
+        eprintln!("Usage: {} <left_player> <right_player>", args[0]);
+        eprintln!("  Players: human | minimax[:depth] | plodding");
+        eprintln!("  Example: {} human minimax:3", args[0]);
+        std::process::exit(1);
+    }
+
+    let left_player = parse_player(&args[1]);
+    let right_player = parse_player(&args[2]);
+
+    run_game(left_player, right_player);
+}
+
+fn parse_player(spec: &str) -> Box<dyn Player> {
+    let parts: Vec<&str> = spec.split(':').collect();
+    let player_type = parts[0];
+
+    match player_type {
+        "human" => Box::new(HumanPlayer),
+        "minimax" => {
+            let depth = if parts.len() > 1 {
+                parts[1].parse().unwrap_or(2)
+            } else {
+                2
+            };
+            Box::new(MinimaxPlayer::new(depth))
+        }
+        "plodding" => Box::new(PloddingPlayer),
+        _ => {
+            eprintln!("Unknown player type: {}", player_type);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_game(left_player: Box<dyn Player>, right_player: Box<dyn Player>) {
+    let mut board = Board::new();
+    let players = [left_player, right_player];
+
+    loop {
+        board.pretty_print_details();
+
+        // Check for win condition
+        if let Some(winner) = board.check_winner() {
+            println!("\n{:?} has won!", winner);
+            break;
+        }
+
+        let player_idx = board.moves_made as usize % 2;
+        let player_move = players[player_idx].make_move(&board);
+
+        // Validate and execute move
+        let moves = board.get_all_moves();
+        match moves.get(&player_move) {
+            Some(new_board) => {
+                board = new_board.clone();
+            }
+            None => {
+                println!("Invalid move: {}", player_move);
+                continue;
+            }
+        }
     }
 }
 
@@ -44,7 +101,7 @@ enum Piece {
     Ball,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Position {
     row: usize,
     col: usize,
@@ -157,6 +214,56 @@ impl Board {
         let mut moves = self.get_man_moves();
         moves.extend(self.get_ball_moves());
         moves
+    }
+
+    /// Returns moves with man placements restricted to nearby squares (within 2 squares of any piece)
+    pub fn get_all_nearby_moves(&self) -> HashMap<String, Board> {
+        let mut moves = self.get_nearby_man_moves();
+        moves.extend(self.get_ball_moves());
+        moves
+    }
+
+    /// Returns man placement moves restricted to nearby squares
+    fn get_nearby_man_moves(&self) -> HashMap<String, Board> {
+        let mut moves = HashMap::new();
+        let mut used = std::collections::HashSet::new();
+
+        for row in 0..WIDTH {
+            for col in 0..LENGTH {
+                let pos = Position::new(row, col);
+                if self.get(pos) != Piece::Empty {
+                    // Found a piece, add all empty squares within 2 steps
+                    for dr in -2..=2 {
+                        for dc in -2..=2 {
+                            if let Some(nearby) = pos.checked_add((dr, dc)) {
+                                if nearby.is_on_board()
+                                    && self.get(nearby) == Piece::Empty
+                                    && !used.contains(&nearby) {
+                                    let mut new_board = self.clone();
+                                    new_board.set(nearby, Piece::Man);
+                                    new_board.increment();
+                                    moves.insert(nearby.to_notation(), new_board);
+                                    used.insert(nearby);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        moves
+    }
+
+    /// Check if the game has been won
+    pub fn check_winner(&self) -> Option<Side> {
+        if self.ball_at.col <= 0 {
+            Some(Side::Right)
+        } else if self.ball_at.col >= LENGTH - 1 {
+            Some(Side::Left)
+        } else {
+            None
+        }
     }
 
     /// Returns all moves that involve placing a man
@@ -332,6 +439,193 @@ impl Board {
     /// Prints a pretty string with details
     pub fn pretty_print_details(&self) {
         println!("{}", self.pretty_string_details());
+    }
+}
+
+// ============================================================================
+// Player Trait and Implementations
+// ============================================================================
+
+trait Player {
+    fn make_move(&self, board: &Board) -> String;
+}
+
+// ----------------------------------------------------------------------------
+// Human Player
+// ----------------------------------------------------------------------------
+
+struct HumanPlayer;
+
+impl Player for HumanPlayer {
+    fn make_move(&self, board: &Board) -> String {
+        let moves = board.get_all_moves();
+
+        // Show a sample jump move if available
+        if let Some((jump_move, _)) = moves.iter().find(|(k, _)| k.contains(' ')) {
+            println!("Example jump move: {}", jump_move.trim());
+        }
+
+        // Show a sample placement move
+        if let Some((place_move, _)) = moves.iter().find(|(k, _)| !k.contains(' ')) {
+            println!("Example placement move: {}", place_move);
+        }
+
+        loop {
+            print!("Enter your move: ");
+            io::stdout().flush().unwrap();
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            let input = input.trim();
+
+            // Try the input as-is first, then try with trailing space
+            if moves.contains_key(input) {
+                return input.to_string();
+            }
+
+            let with_space = format!("{} ", input);
+            if moves.contains_key(&with_space) {
+                return with_space;
+            }
+
+            println!("Invalid move. Try again.");
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Plodding Player
+// ----------------------------------------------------------------------------
+
+struct PloddingPlayer;
+
+impl Player for PloddingPlayer {
+    fn make_move(&self, board: &Board) -> String {
+        let moves = board.get_all_moves();
+
+        // Try to jump in the direction of our goal
+        let preferred_dir = match board.side_to_move {
+            Side::Left => "E ",
+            Side::Right => "W ",
+        };
+
+        if moves.contains_key(preferred_dir) {
+            return preferred_dir.to_string();
+        }
+
+        // Otherwise, place a man next to the ball in the direction of our goal
+        let offset = match board.side_to_move {
+            Side::Left => 1,
+            Side::Right => -1,
+        };
+
+        if let Some(target) = board.ball_at.checked_add((0, offset)) {
+            if target.is_on_board() {
+                let move_name = target.to_notation();
+                if moves.contains_key(&move_name) {
+                    return move_name;
+                }
+            }
+        }
+
+        // Fallback: return any move
+        moves.keys().next().unwrap().clone()
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Minimax Player
+// ----------------------------------------------------------------------------
+
+struct MinimaxPlayer {
+    depth: u32,
+}
+
+impl MinimaxPlayer {
+    fn new(depth: u32) -> Self {
+        Self { depth }
+    }
+
+    /// Negamax scoring function - returns score from perspective of player to move
+    fn negamax(&self, board: &Board, depth: u32) -> f64 {
+        // Check for terminal positions
+        if let Some(winner) = board.check_winner() {
+            return if winner == board.side_to_move {
+                1.0
+            } else {
+                0.0
+            };
+        }
+
+        // Base case: use static evaluator
+        if depth == 0 {
+            return LocationEvaluator::score(board);
+        }
+
+        // Recursive case
+        let moves = board.get_all_nearby_moves();
+        let mut max_score = 0.0;
+
+        for (_, next_board) in moves {
+            let score = 1.0 - self.negamax(&next_board, depth - 1);
+            if score > max_score {
+                max_score = score;
+            }
+        }
+
+        max_score
+    }
+}
+
+impl Player for MinimaxPlayer {
+    fn make_move(&self, board: &Board) -> String {
+        println!("Minimax thinking (depth {})...", self.depth);
+
+        let moves = board.get_all_nearby_moves();
+        let mut best_move = moves.keys().next().unwrap().clone();
+        let mut best_score = 0.0;
+
+        for (move_name, next_board) in moves {
+            let score = 1.0 - self.negamax(&next_board, self.depth - 1);
+
+            if score > best_score {
+                best_score = score;
+                best_move = move_name;
+            }
+        }
+
+        println!("Minimax chose: {} (score: {:.3})", best_move.trim(), best_score);
+        best_move
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Location Evaluator
+// ----------------------------------------------------------------------------
+
+struct LocationEvaluator;
+
+impl LocationEvaluator {
+    /// Returns normalized position of ball (0.0 to 1.0)
+    /// Score is close to 1 if ball is near the goal of the player to move
+    fn score(board: &Board) -> f64 {
+        let mut location = board.ball_at.col as i32;
+
+        // Clamp to board edges
+        if location <= 0 {
+            location = 0;
+        }
+        if location >= LENGTH as i32 - 1 {
+            location = LENGTH as i32 - 1;
+        }
+
+        let value = location as f64 / (LENGTH - 1) as f64;
+
+        // value is near 1 if we're to the east (Right's goal)
+        match board.side_to_move {
+            Side::Left => value,
+            Side::Right => 1.0 - value,
+        }
     }
 }
 
