@@ -194,24 +194,34 @@ impl Board {
 
         for direction in Direction::ALL {
             let delta = direction.delta();
-            let mut jump_length = 0;
 
-            // Find how far we can jump in this direction
+            // First, check if there's at least one man to jump over
+            let first_pos = match self.ball_at.checked_add(delta) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            if !first_pos.is_on_board() || self.get(first_pos) != Piece::Man {
+                continue; // No man to jump over
+            }
+
+            // Find how far we can jump - keep going while we see men
+            let mut jump_length = 1;
             let end_point = loop {
-                jump_length += 1;
-                let potential_end = match self.ball_at.checked_add((delta.0 * jump_length, delta.1 * jump_length)) {
+                let next_pos = match self.ball_at.checked_add((delta.0 * (jump_length + 1), delta.1 * (jump_length + 1))) {
                     Some(p) => p,
-                    None => break None,
+                    None => {
+                        // We've gone off the edge
+                        break self.ball_at.checked_add((delta.0 * (jump_length + 1), delta.1 * (jump_length + 1)));
+                    }
                 };
 
-                // If we're on the board and hit a non-man, stop
-                if potential_end.is_on_board() && self.get(potential_end) != Piece::Man {
-                    break Some(potential_end);
-                }
-
-                // If we went off the board, stop
-                if !potential_end.is_on_board() {
-                    break Some(potential_end);
+                if next_pos.is_on_board() && self.get(next_pos) == Piece::Man {
+                    // Continue jumping over consecutive men
+                    jump_length += 1;
+                } else {
+                    // Stop here - either off board or not a man
+                    break Some(next_pos);
                 }
             };
 
@@ -220,16 +230,11 @@ impl Board {
                 None => continue,
             };
 
-            // Need at least one man to jump over
-            if jump_length <= 1 {
-                continue;
-            }
-
             // Check if we jumped off the board illegally
             // Legal only if we jumped over a man on the goal line (col 0 or LENGTH-1)
             if !end_point.is_on_board() {
-                let prev_point = self.ball_at.checked_add((delta.0 * (jump_length - 1), delta.1 * (jump_length - 1))).unwrap();
-                if prev_point.col != 0 && prev_point.col != LENGTH - 1 {
+                let last_man_pos = self.ball_at.checked_add((delta.0 * jump_length, delta.1 * jump_length)).unwrap();
+                if last_man_pos.col != 0 && last_man_pos.col != LENGTH - 1 {
                     continue;
                 }
             }
@@ -237,12 +242,17 @@ impl Board {
             // Make the jump
             let mut new_board = self.clone();
 
-            // Clear jumped-over men
-            for i in 0..jump_length {
+            // Clear jumped-over men (from position 1 to jump_length)
+            for i in 1..=jump_length {
                 if let Some(pos) = self.ball_at.checked_add((delta.0 * i, delta.1 * i)) {
-                    new_board.set(pos, Piece::Empty);
+                    if pos.is_on_board() {
+                        new_board.set(pos, Piece::Empty);
+                    }
                 }
             }
+
+            // Clear the starting position
+            new_board.set(self.ball_at, Piece::Empty);
 
             // Place ball at destination (if on board)
             if end_point.is_on_board() {
@@ -412,18 +422,21 @@ mod tests {
 
     #[test]
     fn test_multi_jump() {
-        // Create a board with two men to the east
+        // Create a board with two consecutive men to the east
         let mut board = Board::new();
         board.set(Position::new(START_ROW, START_COL + 1), Piece::Man);
         board.set(Position::new(START_ROW, START_COL + 2), Piece::Man);
 
         let ball_moves = board.get_ball_moves();
-        // Should have jumps: "E " (jump one) and potentially "E E " (jump both)
+        // Should have one jump: "E " that jumps over both men at once
         assert!(ball_moves.contains_key("E "));
 
-        // Check that jumping over both men is possible
-        let jumped_once = &ball_moves["E "];
-        assert_eq!(jumped_once.ball_at.col, START_COL + 2);
+        // Ball should land at START_COL + 3 (after both men)
+        let jumped = &ball_moves["E "];
+        assert_eq!(jumped.ball_at.col, START_COL + 3);
+        // Both men should be removed
+        assert_eq!(jumped.get(Position::new(START_ROW, START_COL + 1)), Piece::Empty);
+        assert_eq!(jumped.get(Position::new(START_ROW, START_COL + 2)), Piece::Empty);
     }
 
     #[test]
@@ -467,19 +480,22 @@ mod tests {
 
     #[test]
     fn test_jump_sequence() {
-        // Test that we can jump multiple times in one turn
+        // Test that we can jump multiple times in one turn (change directions)
         let mut board = Board::new();
-        // Place men for a jump east then north
+        // Place men for a jump east, then after landing, can jump northeast
         board.set(Position::new(START_ROW, START_COL + 1), Piece::Man);
-        board.set(Position::new(START_ROW - 1, START_COL + 2), Piece::Man);
+        // After jumping east, ball lands at START_COL + 2
+        // Place a man northeast of that landing position
+        board.set(Position::new(START_ROW - 1, START_COL + 3), Piece::Man);
 
         let ball_moves = board.get_ball_moves();
-        // Should have "E " and "E NE " among others
+        // Should have "E " (single jump)
         assert!(ball_moves.contains_key("E "));
+        // Should have "E NE " (jump east, then northeast)
         assert!(ball_moves.contains_key("E NE "));
 
         let double_jump = &ball_moves["E NE "];
         assert_eq!(double_jump.ball_at.row, START_ROW - 2);
-        assert_eq!(double_jump.ball_at.col, START_COL + 3);
+        assert_eq!(double_jump.ball_at.col, START_COL + 4);
     }
 }
