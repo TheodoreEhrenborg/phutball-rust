@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use clap::Parser;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Write};
@@ -11,18 +12,25 @@ const START_COL: usize = 9;
 const WHITE_CIRCLE: char = '○';
 const BLACK_CIRCLE: char = '●';
 
+/// Phutball game - play against AI or other players
+#[derive(Parser, Debug)]
+#[command(name = "phutball-rust")]
+#[command(about = "Play Phutball (Philosopher's Football)", long_about = None)]
+struct Args {
+    /// Left player type: human, minimax[:depth], or plodding
+    #[arg(value_name = "LEFT_PLAYER")]
+    left: String,
+
+    /// Right player type: human, minimax[:depth], or plodding
+    #[arg(value_name = "RIGHT_PLAYER")]
+    right: String,
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let args = Args::parse();
 
-    if args.len() < 3 {
-        eprintln!("Usage: {} <left_player> <right_player>", args[0]);
-        eprintln!("  Players: human | minimax[:depth] | plodding");
-        eprintln!("  Example: {} human minimax:3", args[0]);
-        std::process::exit(1);
-    }
-
-    let left_player = parse_player(&args[1]);
-    let right_player = parse_player(&args[2]);
+    let left_player = parse_player(&args.left);
+    let right_player = parse_player(&args.right);
 
     run_game(left_player, right_player);
 }
@@ -44,6 +52,7 @@ fn parse_player(spec: &str) -> Box<dyn Player> {
         "plodding" => Box::new(PloddingPlayer),
         _ => {
             eprintln!("Unknown player type: {}", player_type);
+            eprintln!("Valid types: human, minimax[:depth], plodding");
             std::process::exit(1);
         }
     }
