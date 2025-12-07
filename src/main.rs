@@ -1021,4 +1021,44 @@ mod tests {
         // Ball should NOT be placed on the board (it's in the goal)
         assert_eq!(after_w.get(Position::new(7, 0)), Piece::Empty, "Ball not placed at col 0");
     }
+
+    #[test]
+    fn test_full_board_with_ball_at_b2() {
+        // Ball at B2 (row=1, col=1), all other squares filled with men
+        let mut board = Board::new();
+        board.set(board.ball_at, Piece::Empty);
+
+        // Set ball at B2
+        let ball_pos = Position::new(1, 1);
+        board.ball_at = ball_pos;
+        board.set(ball_pos, Piece::Ball);
+
+        // Fill all other squares with men
+        for row in 0..WIDTH {
+            for col in 0..LENGTH {
+                let pos = Position::new(row, col);
+                if pos.row != ball_pos.row || pos.col != ball_pos.col {
+                    board.set(pos, Piece::Man);
+                }
+            }
+        }
+
+        let all_moves = board.get_all_moves();
+        let ball_moves = board.get_ball_moves();
+        let man_moves = board.get_man_moves();
+
+        // No man moves since all squares are filled
+        assert_eq!(man_moves.len(), 0, "Should have no man moves - all squares full");
+
+        assert_eq!(ball_moves.len(), 4, "Should have exactly 4 ball jump moves");
+        assert!(ball_moves.contains_key("NW "), "Should have NW jump");
+        assert!(ball_moves.contains_key("SW "), "Should have SW jump");
+        assert!(ball_moves.contains_key("E "), "Should have E jump");
+        assert!(ball_moves.contains_key("W "), "Should have W jump");
+
+
+        assert_eq!(all_moves.len(), ball_moves.len(), "All moves should be ball moves");
+        assert!(ball_moves.len() > 0, "Should have at least some ball moves");
+
+    }
 }
