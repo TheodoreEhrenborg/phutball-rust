@@ -620,7 +620,8 @@ impl Player for MinimaxPlayer {
         for (move_name, next_board) in moves {
             let score = 1.0 - self.negamax(&next_board, self.depth - 1);
 
-            if score > best_score {
+            // Use lexicographic comparison as tiebreaker for deterministic behavior
+            if score > best_score || (score == best_score && move_name < best_move) {
                 best_score = score;
                 best_move = move_name;
             }
