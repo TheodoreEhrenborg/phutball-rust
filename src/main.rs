@@ -55,10 +55,24 @@ fn parse_player(spec: &str) -> Box<dyn Player> {
             };
             Box::new(MinimaxPlayer::new(depth))
         }
+        "alphabeta" => {
+            if parts.len() < 2 {
+                eprintln!("Error: alphabeta requires depth specification (e.g., alphabeta:3)");
+                std::process::exit(1);
+            }
+            let depth = match parts[1].parse::<u32>() {
+                Ok(d) if d > 0 => d,
+                _ => {
+                    eprintln!("Error: alphabeta depth must be a positive integer");
+                    std::process::exit(1);
+                }
+            };
+            Box::new(AlphaBetaPlayer::new(depth))
+        }
         "plodding" => Box::new(PloddingPlayer),
         _ => {
             eprintln!("Unknown player type: {}", player_type);
-            eprintln!("Valid types: human, minimax:DEPTH, plodding");
+            eprintln!("Valid types: human, minimax:DEPTH, alphabeta:DEPTH, plodding");
             std::process::exit(1);
         }
     }
@@ -578,6 +592,11 @@ impl MinimaxPlayer {
         Self { depth }
     }
 
+    /// Public interface to evaluate a position at given depth
+    pub fn evaluate(&self, board: &Board) -> f64 {
+        1.0 - self.negamax(board, self.depth - 1)
+    }
+
     /// Negamax scoring function - returns score from perspective of player to move
     fn negamax(&self, board: &Board, depth: u32) -> f64 {
         // Check for terminal positions
@@ -628,6 +647,82 @@ impl Player for MinimaxPlayer {
         }
 
         println!("Minimax chose: {} (score: {:.3})", best_move.trim(), best_score);
+        best_move
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Alpha-Beta Player
+// ----------------------------------------------------------------------------
+
+struct AlphaBetaPlayer {
+    depth: u32,
+}
+
+impl AlphaBetaPlayer {
+    fn new(depth: u32) -> Self {
+        Self { depth }
+    }
+
+    /// Public interface to evaluate a position at given depth
+    pub fn evaluate(&self, board: &Board) -> f64 {
+        1.0 - self.negamax_ab(board, self.depth - 1, 0.0, 1.0)
+    }
+
+    /// Negamax with alpha-beta pruning - returns score from perspective of player to move
+    fn negamax_ab(&self, board: &Board, depth: u32, mut alpha: f64, beta: f64) -> f64 {
+        // Check for terminal positions
+        if let Some(winner) = board.check_winner() {
+            return if winner == board.side_to_move {
+                1.0
+            } else {
+                0.0
+            };
+        }
+
+        // Base case: use static evaluator
+        if depth == 0 {
+            return LocationEvaluator::score(board);
+        }
+
+        // Recursive case with alpha-beta pruning
+        let moves = board.get_all_nearby_moves();
+        let mut max_score = 0.0;
+
+        for (_, next_board) in moves {
+            let score = 1.0 - self.negamax_ab(&next_board, depth - 1, 1.0 - beta, 1.0 - alpha);
+            if score > max_score {
+                max_score = score;
+            }
+            alpha = alpha.max(score);
+            if alpha >= beta {
+                break; // Beta cutoff
+            }
+        }
+
+        max_score
+    }
+}
+
+impl Player for AlphaBetaPlayer {
+    fn make_move(&self, board: &Board) -> String {
+        println!("Alpha-Beta thinking (depth {})...", self.depth);
+
+        let moves = board.get_all_nearby_moves();
+        let mut best_move = moves.keys().next().unwrap().clone();
+        let mut best_score = 0.0;
+
+        for (move_name, next_board) in moves {
+            let score = 1.0 - self.negamax_ab(&next_board, self.depth - 1, 0.0, 1.0);
+
+            // Use lexicographic comparison as tiebreaker for deterministic behavior
+            if score > best_score || (score == best_score && move_name < best_move) {
+                best_score = score;
+                best_move = move_name;
+            }
+        }
+
+        println!("Alpha-Beta chose: {} (score: {:.3})", best_move.trim(), best_score);
         best_move
     }
 }
@@ -1061,5 +1156,100 @@ mod tests {
         assert_eq!(all_moves.len(), ball_moves.len(), "All moves should be ball moves");
         assert!(ball_moves.len() > 0, "Should have at least some ball moves");
 
+    }
+
+    #[test]
+    fn test_alphabeta_equals_minimax_symmetric() {
+        // Test symmetric case: ball surrounded by 8 men
+        let mut board = Board::new();
+        board.set(board.ball_at, Piece::Empty);
+
+        // Place ball at center
+        let ball_pos = Position::new(7, 9);
+        board.ball_at = ball_pos;
+        board.set(ball_pos, Piece::Ball);
+
+        // Place 8 men around the ball
+        for dr in -1..=1 {
+            for dc in -1..=1 {
+                if dr == 0 && dc == 0 {
+                    continue; // Skip ball position
+                }
+                if let Some(pos) = ball_pos.checked_add((dr, dc)) {
+                    if pos.is_on_board() {
+                        board.set(pos, Piece::Man);
+                    }
+                }
+            }
+        }
+
+        // Test at depth 2
+        let minimax_d2 = MinimaxPlayer::new(2);
+        let alphabeta_d2 = AlphaBetaPlayer::new(2);
+
+        let minimax_score_d2 = minimax_d2.evaluate(&board);
+        let alphabeta_score_d2 = alphabeta_d2.evaluate(&board);
+
+        assert_eq!(minimax_score_d2, alphabeta_score_d2,
+                   "Depth 2: Minimax and AlphaBeta should evaluate position identically");
+
+        // Test at depth 3
+        let minimax_d3 = MinimaxPlayer::new(3);
+        let alphabeta_d3 = AlphaBetaPlayer::new(3);
+
+        let minimax_score_d3 = minimax_d3.evaluate(&board);
+        let alphabeta_score_d3 = alphabeta_d3.evaluate(&board);
+
+        assert_eq!(minimax_score_d3, alphabeta_score_d3,
+                   "Depth 3: Minimax and AlphaBeta should evaluate position identically");
+    }
+
+    #[test]
+    fn test_alphabeta_equals_minimax_asymmetric() {
+        // Test asymmetric case: ball with 5 men
+        let mut board = Board::new();
+        board.set(board.ball_at, Piece::Empty);
+
+        // Place ball at center
+        let ball_pos = Position::new(7, 9);
+        board.ball_at = ball_pos;
+        board.set(ball_pos, Piece::Ball);
+
+        // Place 5 men in asymmetric pattern: N, E, S, NE, SW
+        let positions = vec![
+            ball_pos.checked_add((-1, 0)),  // N
+            ball_pos.checked_add((0, 1)),   // E
+            ball_pos.checked_add((1, 0)),   // S
+            ball_pos.checked_add((-1, 1)),  // NE
+            ball_pos.checked_add((1, -1)),  // SW
+        ];
+
+        for pos_opt in positions {
+            if let Some(pos) = pos_opt {
+                if pos.is_on_board() {
+                    board.set(pos, Piece::Man);
+                }
+            }
+        }
+
+        // Test at depth 2
+        let minimax_d2 = MinimaxPlayer::new(2);
+        let alphabeta_d2 = AlphaBetaPlayer::new(2);
+
+        let minimax_score_d2 = minimax_d2.evaluate(&board);
+        let alphabeta_score_d2 = alphabeta_d2.evaluate(&board);
+
+        assert_eq!(minimax_score_d2, alphabeta_score_d2,
+                   "Depth 2: Minimax and AlphaBeta should evaluate asymmetric position identically");
+
+        // Test at depth 3
+        let minimax_d3 = MinimaxPlayer::new(3);
+        let alphabeta_d3 = AlphaBetaPlayer::new(3);
+
+        let minimax_score_d3 = minimax_d3.evaluate(&board);
+        let alphabeta_score_d3 = alphabeta_d3.evaluate(&board);
+
+        assert_eq!(minimax_score_d3, alphabeta_score_d3,
+                   "Depth 3: Minimax and AlphaBeta should evaluate asymmetric position identically");
     }
 }
