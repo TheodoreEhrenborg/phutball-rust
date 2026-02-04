@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use clap::Parser;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Write};
@@ -69,10 +70,24 @@ fn parse_player(spec: &str) -> Box<dyn Player> {
             };
             Box::new(AlphaBetaPlayer::new(depth))
         }
+        "parallel" => {
+            if parts.len() < 2 {
+                eprintln!("Error: parallel requires depth specification (e.g., parallel:3)");
+                std::process::exit(1);
+            }
+            let depth = match parts[1].parse::<u32>() {
+                Ok(d) if d > 0 => d,
+                _ => {
+                    eprintln!("Error: parallel depth must be a positive integer");
+                    std::process::exit(1);
+                }
+            };
+            Box::new(ParallelAlphaBetaPlayer::new(depth))
+        }
         "plodding" => Box::new(PloddingPlayer),
         _ => {
             eprintln!("Unknown player type: {}", player_type);
-            eprintln!("Valid types: human, minimax:DEPTH, alphabeta:DEPTH, plodding");
+            eprintln!("Valid types: human, minimax:DEPTH, alphabeta:DEPTH, parallel:DEPTH, plodding");
             std::process::exit(1);
         }
     }
@@ -728,6 +743,89 @@ impl Player for AlphaBetaPlayer {
 }
 
 // ----------------------------------------------------------------------------
+// Parallel Alpha-Beta Player
+// ----------------------------------------------------------------------------
+
+struct ParallelAlphaBetaPlayer {
+    depth: u32,
+}
+
+impl ParallelAlphaBetaPlayer {
+    fn new(depth: u32) -> Self {
+        Self { depth }
+    }
+
+    /// Public interface to evaluate a position at given depth
+    pub fn evaluate(&self, board: &Board) -> f64 {
+        1.0 - self.negamax_ab(board, self.depth - 1, 0.0, 1.0)
+    }
+
+    /// Negamax with alpha-beta pruning - returns score from perspective of player to move
+    fn negamax_ab(&self, board: &Board, depth: u32, mut alpha: f64, beta: f64) -> f64 {
+        // Check for terminal positions
+        if let Some(winner) = board.check_winner() {
+            return if winner == board.side_to_move {
+                1.0
+            } else {
+                0.0
+            };
+        }
+
+        // Base case: use static evaluator
+        if depth == 0 {
+            return LocationEvaluator::score(board);
+        }
+
+        // Recursive case with alpha-beta pruning
+        let moves = board.get_all_nearby_moves();
+        let mut max_score = 0.0;
+
+        for (_, next_board) in moves {
+            let score = 1.0 - self.negamax_ab(&next_board, depth - 1, 1.0 - beta, 1.0 - alpha);
+            if score > max_score {
+                max_score = score;
+            }
+            alpha = alpha.max(score);
+            if alpha >= beta {
+                break; // Beta cutoff
+            }
+        }
+
+        max_score
+    }
+}
+
+impl Player for ParallelAlphaBetaPlayer {
+    fn make_move(&self, board: &Board) -> String {
+        println!("Parallel Alpha-Beta thinking (depth {})...", self.depth);
+
+        let moves = board.get_all_nearby_moves();
+
+        // Evaluate all root moves in parallel
+        let mut move_scores: Vec<(String, f64)> = moves
+            .par_iter()
+            .map(|(move_name, next_board)| {
+                let score = 1.0 - self.negamax_ab(next_board, self.depth - 1, 0.0, 1.0);
+                (move_name.clone(), score)
+            })
+            .collect();
+
+        // Sort by score descending, then lexicographically for determinism
+        move_scores.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap()
+                .then_with(|| a.0.cmp(&b.0))
+        });
+
+        // Select the best move
+        let (best_move, best_score) = &move_scores[0];
+
+        println!("Parallel Alpha-Beta chose: {} (score: {:.3})", best_move.trim(), best_score);
+        best_move.clone()
+    }
+}
+
+// ----------------------------------------------------------------------------
 // Location Evaluator
 // ----------------------------------------------------------------------------
 
@@ -1251,5 +1349,118 @@ mod tests {
 
         assert_eq!(minimax_score_d3, alphabeta_score_d3,
                    "Depth 3: Minimax and AlphaBeta should evaluate asymmetric position identically");
+    }
+
+    #[test]
+    fn test_parallel_alphabeta_equals_alphabeta_symmetric() {
+        // Test symmetric case: ball surrounded by 8 men
+        let mut board = Board::new();
+        board.set(board.ball_at, Piece::Empty);
+
+        let ball_pos = Position::new(7, 9);
+        board.ball_at = ball_pos;
+        board.set(ball_pos, Piece::Ball);
+
+        // Place 8 men around the ball
+        for dr in -1..=1 {
+            for dc in -1..=1 {
+                if dr == 0 && dc == 0 {
+                    continue;
+                }
+                if let Some(pos) = ball_pos.checked_add((dr, dc)) {
+                    if pos.is_on_board() {
+                        board.set(pos, Piece::Man);
+                    }
+                }
+            }
+        }
+
+        // Test at multiple depths
+        for depth in 2..=4 {
+            let alphabeta = AlphaBetaPlayer::new(depth);
+            let parallel = ParallelAlphaBetaPlayer::new(depth);
+
+            let ab_score = alphabeta.evaluate(&board);
+            let par_score = parallel.evaluate(&board);
+
+            assert_eq!(ab_score, par_score,
+                       "Depth {}: Parallel should match sequential AlphaBeta", depth);
+        }
+    }
+
+    #[test]
+    fn test_parallel_alphabeta_equals_alphabeta_asymmetric() {
+        let mut board = Board::new();
+        board.set(board.ball_at, Piece::Empty);
+
+        let ball_pos = Position::new(7, 9);
+        board.ball_at = ball_pos;
+        board.set(ball_pos, Piece::Ball);
+
+        // Asymmetric pattern: N, E, S, NE, SW
+        let positions = vec![
+            ball_pos.checked_add((-1, 0)),
+            ball_pos.checked_add((0, 1)),
+            ball_pos.checked_add((1, 0)),
+            ball_pos.checked_add((-1, 1)),
+            ball_pos.checked_add((1, -1)),
+        ];
+
+        for pos_opt in positions {
+            if let Some(pos) = pos_opt {
+                if pos.is_on_board() {
+                    board.set(pos, Piece::Man);
+                }
+            }
+        }
+
+        for depth in 2..=4 {
+            let alphabeta = AlphaBetaPlayer::new(depth);
+            let parallel = ParallelAlphaBetaPlayer::new(depth);
+
+            let ab_score = alphabeta.evaluate(&board);
+            let par_score = parallel.evaluate(&board);
+
+            assert_eq!(ab_score, par_score,
+                       "Depth {}: Parallel should match sequential for asymmetric position", depth);
+        }
+    }
+
+    #[test]
+    fn test_parallel_deterministic_move_selection() {
+        // Test that parallel player makes same move across multiple runs
+        let mut board = Board::new();
+        board.set(board.ball_at, Piece::Empty);
+
+        let ball_pos = Position::new(7, 9);
+        board.ball_at = ball_pos;
+        board.set(ball_pos, Piece::Ball);
+
+        // Create position with multiple men
+        for dr in -1..=1 {
+            for dc in -1..=1 {
+                if dr == 0 && dc == 0 {
+                    continue;
+                }
+                if let Some(pos) = ball_pos.checked_add((dr, dc)) {
+                    if pos.is_on_board() {
+                        board.set(pos, Piece::Man);
+                    }
+                }
+            }
+        }
+
+        let parallel = ParallelAlphaBetaPlayer::new(3);
+
+        // Make the same move decision 5 times
+        let moves: Vec<String> = (0..5)
+            .map(|_| parallel.make_move(&board))
+            .collect();
+
+        // All moves should be identical
+        for i in 1..moves.len() {
+            assert_eq!(moves[0], moves[i],
+                       "Parallel player should make same move consistently");
+        }
     }
 }
