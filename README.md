@@ -2,6 +2,8 @@
 
 Stage 1: The rules of phutball. Preferably with the code well-organized in anticipation of future stages.
 
+TODO needs to penalize later victories
+
 Stage 2: A minimax agent that plays phutball. Evaluation function is how close the ball is to the goal.
 
 Stage 3: Data collection: For each board state, the eventual score after running depth-d minimax. Hence also a way to randomize the first few moves to create variety and hence a lot of data.
