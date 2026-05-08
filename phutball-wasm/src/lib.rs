@@ -1144,7 +1144,7 @@ impl GameState {
         }
         let side = self.board.side_to_move.as_str();
         if self.is_human_turn() {
-            format!("{} to move — click an intersection or the ball", side)
+            format!("{} to move — type a move below and click Preview", side)
         } else {
             format!("{} to move (engine thinking\u{2026})", side)
         }
@@ -1162,6 +1162,87 @@ const PAD_T: i32 = 30;
 fn svg_w() -> i32 { PAD_L + (LENGTH as i32 - 1) * CELL + 20 }
 fn svg_h() -> i32 { PAD_T + (WIDTH as i32 - 1) * CELL + 20 }
 
+fn board_svg(board: &Board, cell: i32, pad_l: i32, pad_t: i32) -> Html {
+    let w = pad_l + (LENGTH as i32 - 1) * cell + 20;
+    let h = pad_t + (WIDTH as i32 - 1) * cell + 20;
+
+    let vert_lines = (0..LENGTH as i32).map(|c| {
+        let x = pad_l + c * cell;
+        html! { <line x1={x.to_string()} y1={pad_t.to_string()}
+                      x2={x.to_string()} y2={(pad_t + (WIDTH as i32 - 1) * cell).to_string()}
+                      stroke="#aaa" stroke-width="0.8"/> }
+    });
+
+    let horiz_lines = (0..WIDTH as i32).map(|r| {
+        let y = pad_t + r * cell;
+        html! { <line x1={pad_l.to_string()} y1={y.to_string()}
+                      x2={(pad_l + (LENGTH as i32 - 1) * cell).to_string()} y2={y.to_string()}
+                      stroke="#aaa" stroke-width="0.8"/> }
+    });
+
+    let col_labels = (0..LENGTH as i32).map(|c| {
+        let x = pad_l + c * cell;
+        html! { <text x={x.to_string()} y={(pad_t - 6).to_string()}
+                      text-anchor="middle" font-size="11" fill="#333">
+                    {(c + 1).to_string()}
+                </text> }
+    });
+
+    let row_labels = (0..WIDTH as i32).map(|r| {
+        let y = pad_t + r * cell;
+        let label = (b'A' + r as u8) as char;
+        html! { <text x={(pad_l - 6).to_string()} y={y.to_string()}
+                      text-anchor="end" dy="0.35em" font-size="11" fill="#333">
+                    {label.to_string()}
+                </text> }
+    });
+
+    let men: Vec<Html> = (0..WIDTH).flat_map(|row| {
+        (0..LENGTH).filter_map(move |col| {
+            if board.array[row][col] == Piece::Man {
+                let cx = pad_l + col as i32 * cell;
+                let cy = pad_t + row as i32 * cell;
+                let r = (cell * 5 / 16).max(4);
+                Some(html! {
+                    <circle cx={cx.to_string()} cy={cy.to_string()} r={r.to_string()}
+                            fill="white" stroke="#333" stroke-width="1.5"/>
+                })
+            } else {
+                None
+            }
+        })
+    }).collect();
+
+    let ball = board.ball_at;
+    let bcx = pad_l + ball.col as i32 * cell;
+    let bcy = pad_t + ball.row as i32 * cell;
+    let ball_r = (cell * 3 / 8).max(5);
+
+    let goal_l_x = pad_l - cell / 2;
+    let goal_r_x = pad_l + (LENGTH as i32 - 1) * cell;
+    let goal_y = pad_t - cell / 2;
+    let goal_zone_h = (WIDTH as i32 - 1) * cell + cell;
+
+    html! {
+        <svg width={w.to_string()} height={h.to_string()}
+             style="max-width:100%;height:auto;border:1px solid #999;background:white;display:block;">
+            <rect x={goal_l_x.to_string()} y={goal_y.to_string()}
+                  width={(cell / 2).to_string()} height={goal_zone_h.to_string()}
+                  fill="rgba(255,150,150,0.25)"/>
+            <rect x={goal_r_x.to_string()} y={goal_y.to_string()}
+                  width={(cell / 2).to_string()} height={goal_zone_h.to_string()}
+                  fill="rgba(150,200,255,0.25)"/>
+            { for vert_lines }
+            { for horiz_lines }
+            { for col_labels }
+            { for row_labels }
+            { for men }
+            <circle cx={bcx.to_string()} cy={bcy.to_string()} r={ball_r.to_string()}
+                    fill="#111" stroke="white" stroke-width="1.5"/>
+        </svg>
+    }
+}
+
 // ============================================================================
 // Yew App component
 // ============================================================================
@@ -1172,6 +1253,9 @@ fn app() -> Html {
     let right_spec = use_state(|| "human".to_string());
     let budget_ms = use_state(|| 500u64);
     let game = use_state(|| GameState::new("eval5", "human", 500));
+    let move_input: UseStateHandle<String> = use_state(|| String::new());
+    let preview_board: UseStateHandle<Option<Board>> = use_state(|| None);
+    let move_error: UseStateHandle<Option<String>> = use_state(|| None);
 
     // Schedule engine moves whenever game state changes
     {
@@ -1197,8 +1281,14 @@ fn app() -> Html {
         let left_spec = left_spec.clone();
         let right_spec = right_spec.clone();
         let budget_ms = budget_ms.clone();
+        let move_input = move_input.clone();
+        let preview_board = preview_board.clone();
+        let move_error = move_error.clone();
         Callback::from(move |_: MouseEvent| {
             game.set(GameState::new(&left_spec, &right_spec, *budget_ms));
+            move_input.set(String::new());
+            preview_board.set(None);
+            move_error.set(None);
         })
     };
 
@@ -1234,158 +1324,85 @@ fn app() -> Html {
         })
     };
 
-    // SVG click handler: compute nearest grid intersection, dispatch action
-    let on_svg_click = {
+    // Move text input: update state and auto-preview on each keystroke
+    let on_move_input = {
         let game = game.clone();
-        Callback::from(move |e: MouseEvent| {
-            let g = (*game).clone();
-            if g.winner().is_some() || !g.is_human_turn() { return; }
+        let move_input = move_input.clone();
+        let preview_board = preview_board.clone();
+        let move_error = move_error.clone();
+        Callback::from(move |e: web_sys::InputEvent| {
+            if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+                let val = el.value();
+                move_input.set(val.clone());
+                if val.is_empty() {
+                    preview_board.set(None);
+                    move_error.set(None);
+                } else {
+                    let all_moves = (*game).board.get_all_moves();
+                    if let Some(b) = all_moves.get(&val).or_else(|| all_moves.get(&format!("{} ", val))) {
+                        preview_board.set(Some(b.clone()));
+                        move_error.set(None);
+                    } else {
+                        preview_board.set(None);
+                        move_error.set(Some("Invalid move".to_string()));
+                    }
+                }
+            }
+        })
+    };
 
-            // Convert screen coords to SVG coords
-            let target = match e.current_target() {
-                Some(t) => t,
-                None => return,
-            };
-            let el: web_sys::Element = match target.dyn_into() {
-                Ok(e) => e,
-                Err(_) => return,
-            };
-            let rect = el.get_bounding_client_rect();
-            let display_w = rect.width();
-            if display_w == 0.0 { return; }
-
-            let scale = svg_w() as f64 / display_w;
-            let svg_x = (e.client_x() as f64 - rect.left()) * scale;
-            let svg_y = (e.client_y() as f64 - rect.top()) * scale;
-
-            let col_f = (svg_x - PAD_L as f64) / CELL as f64;
-            let row_f = (svg_y - PAD_T as f64) / CELL as f64;
-            let col = col_f.round() as i32;
-            let row = row_f.round() as i32;
-
-            if col < 0 || col >= LENGTH as i32 || row < 0 || row >= WIDTH as i32 {
+    // Preview button
+    let on_preview = {
+        let game = game.clone();
+        let move_input = move_input.clone();
+        let preview_board = preview_board.clone();
+        let move_error = move_error.clone();
+        Callback::from(move |_: MouseEvent| {
+            let val = (*move_input).clone();
+            if val.is_empty() {
+                move_error.set(Some("Enter a move first".to_string()));
                 return;
             }
-            let col = col as usize;
-            let row = row as usize;
-
-            // Reject clicks too far from any intersection centre
-            let cx = PAD_L as f64 + col as f64 * CELL as f64;
-            let cy = PAD_T as f64 + row as f64 * CELL as f64;
-            let dist = ((svg_x - cx).powi(2) + (svg_y - cy).powi(2)).sqrt();
-            if dist > CELL as f64 * 0.55 { return; }
-
-            let ball = g.board.ball_at;
-            let mut new_state = g.clone();
-
-            if row == ball.row && col == ball.col {
-                // Toggle ball selection
-                new_state.toggle_ball();
-            } else if g.ball_selected {
-                // Click while ball selected: jump dest or deselect
-                if let Some((mv, _, _)) = g.jump_dests.iter().find(|(_, r, c)| *r == row && *c == col) {
-                    let mv = mv.clone();
-                    new_state.play_human_move(&mv);
-                } else {
-                    new_state.ball_selected = false;
-                    new_state.jump_dests.clear();
-                }
+            let all_moves = (*game).board.get_all_moves();
+            if let Some(b) = all_moves.get(&val).or_else(|| all_moves.get(&format!("{} ", val))) {
+                preview_board.set(Some(b.clone()));
+                move_error.set(None);
             } else {
-                // Placement: row letter + col number (1-indexed)
-                let mv = format!("{}{}", (b'A' + row as u8) as char, col + 1);
-                new_state.play_human_move(&mv);
+                preview_board.set(None);
+                move_error.set(Some("Invalid move".to_string()));
             }
+        })
+    };
 
-            game.set(new_state);
+    // Confirm button: execute the previewed move
+    let on_confirm = {
+        let game = game.clone();
+        let move_input = move_input.clone();
+        let preview_board = preview_board.clone();
+        let move_error = move_error.clone();
+        Callback::from(move |_: MouseEvent| {
+            if (*preview_board).is_none() { return; }
+            let input = (*move_input).clone();
+            let mut new_state = (*game).clone();
+            if new_state.play_human_move(&input) {
+                game.set(new_state);
+                move_input.set(String::new());
+                preview_board.set(None);
+                move_error.set(None);
+            }
         })
     };
 
     let g = &*game;
-    let w = svg_w();
-    let h = svg_h();
     let status = g.status_text();
     let lv = (*left_spec).clone();
     let rv = (*right_spec).clone();
     let bv = *budget_ms;
-
-    // SVG grid lines
-    let vert_lines = (0..LENGTH as i32).map(|c| {
-        let x = PAD_L + c * CELL;
-        html! { <line x1={x.to_string()} y1={PAD_T.to_string()}
-                      x2={x.to_string()} y2={(PAD_T + (WIDTH as i32 - 1) * CELL).to_string()}
-                      stroke="#aaa" stroke-width="0.8"/> }
-    });
-
-    let horiz_lines = (0..WIDTH as i32).map(|r| {
-        let y = PAD_T + r * CELL;
-        html! { <line x1={PAD_L.to_string()} y1={y.to_string()}
-                      x2={(PAD_L + (LENGTH as i32 - 1) * CELL).to_string()} y2={y.to_string()}
-                      stroke="#aaa" stroke-width="0.8"/> }
-    });
-
-    // Column labels (1–19)
-    let col_labels = (0..LENGTH as i32).map(|c| {
-        let x = PAD_L + c * CELL;
-        html! { <text x={x.to_string()} y={(PAD_T - 6).to_string()}
-                      text-anchor="middle" font-size="11" fill="#333">
-                    {(c + 1).to_string()}
-                </text> }
-    });
-
-    // Row labels (A–O)
-    let row_labels = (0..WIDTH as i32).map(|r| {
-        let y = PAD_T + r * CELL;
-        let label = (b'A' + r as u8) as char;
-        html! { <text x={(PAD_L - 6).to_string()} y={y.to_string()}
-                      text-anchor="end" dy="0.35em" font-size="11" fill="#333">
-                    {label.to_string()}
-                </text> }
-    });
-
-    // Jump destination highlights
-    let jump_highlights: Vec<Html> = if g.ball_selected {
-        g.jump_dests.iter().map(|(_, row, col)| {
-            let cx = PAD_L + *col as i32 * CELL;
-            let cy = PAD_T + *row as i32 * CELL;
-            html! { <circle cx={cx.to_string()} cy={cy.to_string()} r="14"
-                            fill="rgba(50,200,50,0.45)"/> }
-        }).collect()
-    } else {
-        vec![]
-    };
-
-    // Men
-    let men: Vec<Html> = (0..WIDTH).flat_map(|row| {
-        (0..LENGTH).filter_map(move |col| {
-            if g.board.array[row][col] == Piece::Man {
-                let cx = PAD_L + col as i32 * CELL;
-                let cy = PAD_T + row as i32 * CELL;
-                Some(html! {
-                    <circle cx={cx.to_string()} cy={cy.to_string()} r="10"
-                            fill="white" stroke="#333" stroke-width="1.5"/>
-                })
-            } else {
-                None
-            }
-        })
-    }).collect();
-
-    // Ball
-    let ball = g.board.ball_at;
-    let bcx = PAD_L + ball.col as i32 * CELL;
-    let bcy = PAD_T + ball.row as i32 * CELL;
-    let ball_halo = if g.ball_selected {
-        html! { <circle cx={bcx.to_string()} cy={bcy.to_string()} r="16"
-                        fill="rgba(50,200,50,0.35)"/> }
-    } else {
-        html! {}
-    };
-
-    // Goal zone x coords
-    let goal_l_x = PAD_L - CELL / 2;
-    let goal_r_x = PAD_L + (LENGTH as i32 - 1) * CELL;
-    let goal_y = PAD_T - CELL / 2;
-    let goal_zone_h = (WIDTH as i32 - 1) * CELL + CELL;
+    let cur_input = (*move_input).clone();
+    let has_preview = (*preview_board).is_some();
+    let is_human_active = g.is_human_turn() && g.winner().is_none();
+    let preview_svg = (*preview_board).as_ref().map(|b| board_svg(b, 18, 28, 22));
+    let error_msg = (*move_error).clone();
 
     html! {
         <div style="font-family:sans-serif;margin:10px;background:#f4f4f4;min-height:100vh;">
@@ -1424,48 +1441,49 @@ fn app() -> Html {
             </div>
 
             <div style="width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;">
-                <svg width={w.to_string()} height={h.to_string()}
-                     style="max-width:100%;height:auto;border:1px solid #999;background:white;display:block;touch-action:manipulation;"
-                     onclick={on_svg_click}>
-
-                    // Goal zone shading: left (red) = Right player's goal, right (blue) = Left's goal
-                    <rect x={goal_l_x.to_string()} y={goal_y.to_string()}
-                          width={(CELL / 2).to_string()} height={goal_zone_h.to_string()}
-                          fill="rgba(255,150,150,0.25)"/>
-                    <rect x={goal_r_x.to_string()} y={goal_y.to_string()}
-                          width={(CELL / 2).to_string()} height={goal_zone_h.to_string()}
-                          fill="rgba(150,200,255,0.25)"/>
-
-                    // Grid
-                    { for vert_lines }
-                    { for horiz_lines }
-
-                    // Labels
-                    { for col_labels }
-                    { for row_labels }
-
-                    // Jump highlights (behind men)
-                    { for jump_highlights }
-
-                    // Men
-                    { for men }
-
-                    // Ball (halo + filled circle)
-                    { ball_halo }
-                    <circle cx={bcx.to_string()} cy={bcy.to_string()} r="12"
-                            fill="#111" stroke="white" stroke-width="1.5"/>
-                </svg>
+                { board_svg(&g.board, CELL, PAD_L, PAD_T) }
             </div>
 
             <div style="margin-top:6px;font-size:15px;font-weight:bold;min-height:22px;">
                 {status}
             </div>
 
+            if is_human_active {
+                <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                    <input type="text"
+                           value={cur_input}
+                           oninput={on_move_input}
+                           placeholder="Enter move (e.g. A5, E , E NE )"
+                           style="padding:4px 8px;font-size:14px;width:220px;"/>
+                    <button onclick={on_preview}
+                            style="padding:4px 10px;cursor:pointer;font-size:13px;">
+                        {"Preview"}
+                    </button>
+                    <button onclick={on_confirm}
+                            disabled={!has_preview}
+                            style="padding:4px 10px;cursor:pointer;font-size:13px;">
+                        {"Confirm"}
+                    </button>
+                    if let Some(ref err) = error_msg {
+                        <span style="color:red;font-size:13px;">{err}</span>
+                    }
+                </div>
+            }
+
+            if let Some(svg) = preview_svg {
+                <div style="margin-top:8px;">
+                    <div style="font-size:13px;font-weight:bold;margin-bottom:4px;">{"After this move:"}</div>
+                    <div style="width:100%;overflow-x:auto;">
+                        {svg}
+                    </div>
+                </div>
+            }
+
             <div style="margin-top:8px;font-size:12px;color:#555;max-width:620px;">
                 <b>{"Rules: "}</b>
                 {"Left tries to move the ball to the right edge (column 19); Right to the left edge (column 1). "}
-                {"On your turn: place a man on any empty intersection, OR click the ball to see available jumps highlighted in green. "}
-                {"Jumped men are removed; chained jumps are allowed in one turn."}
+                {"On your turn: type a move and click Preview, then Confirm. Man placement: row letter + column (e.g. A5). "}
+                {"Ball jump: direction + space (e.g. E ). Chain jumps with spaces (e.g. E NE )."}
             </div>
         </div>
     }
