@@ -394,7 +394,7 @@ fn app() -> Html {
         })
     };
 
-    // Move text input: update state and auto-preview on each keystroke
+    // Move text input: auto-preview on keystroke, case-insensitive lookup
     let on_move_input = {
         let game = game.clone();
         let move_input = move_input.clone();
@@ -408,8 +408,9 @@ fn app() -> Html {
                     preview_board.set(None);
                     move_error.set(None);
                 } else {
+                    let upper = val.to_uppercase();
                     let all_moves = (*game).board.get_all_moves();
-                    if let Some(b) = all_moves.get(&val).or_else(|| all_moves.get(&format!("{} ", val))) {
+                    if let Some(b) = all_moves.get(&upper).or_else(|| all_moves.get(&format!("{} ", upper))) {
                         preview_board.set(Some(b.clone()));
                         move_error.set(None);
                     } else {
@@ -417,29 +418,6 @@ fn app() -> Html {
                         move_error.set(Some("Invalid move".to_string()));
                     }
                 }
-            }
-        })
-    };
-
-    // Preview button
-    let on_preview = {
-        let game = game.clone();
-        let move_input = move_input.clone();
-        let preview_board = preview_board.clone();
-        let move_error = move_error.clone();
-        Callback::from(move |_: MouseEvent| {
-            let val = (*move_input).clone();
-            if val.is_empty() {
-                move_error.set(Some("Enter a move first".to_string()));
-                return;
-            }
-            let all_moves = (*game).board.get_all_moves();
-            if let Some(b) = all_moves.get(&val).or_else(|| all_moves.get(&format!("{} ", val))) {
-                preview_board.set(Some(b.clone()));
-                move_error.set(None);
-            } else {
-                preview_board.set(None);
-                move_error.set(Some("Invalid move".to_string()));
             }
         })
     };
@@ -452,7 +430,7 @@ fn app() -> Html {
         let move_error = move_error.clone();
         Callback::from(move |_: MouseEvent| {
             if (*preview_board).is_none() { return; }
-            let input = (*move_input).clone();
+            let input = (*move_input).to_uppercase();
             let mut new_state = (*game).clone();
             if new_state.play_human_move(&input) {
                 game.set(new_state);
@@ -474,6 +452,50 @@ fn app() -> Html {
     let is_human_active = g.is_human_turn() && g.winner().is_none();
     let preview_svg = (*preview_board).as_ref().map(|b| board_svg(b, 18, 28, 22));
     let error_msg = (*move_error).clone();
+
+    // Compute example moves for the hint buttons
+    let (example_jump, example_placement) = if is_human_active {
+        let all_moves = g.board.get_all_moves();
+        // Most complex jump = key with most spaces
+        let best_jump = {
+            let mut jumps: Vec<&String> = all_moves.keys().filter(|k| k.ends_with(' ')).collect();
+            jumps.sort();
+            jumps.into_iter()
+                .max_by_key(|k| k.chars().filter(|c| *c == ' ').count())
+                .map(|k| k.trim().to_lowercase())
+        };
+        // Seeded-deterministic placement
+        let mut placements: Vec<String> = all_moves.keys()
+            .filter(|k| !k.ends_with(' '))
+            .cloned().collect();
+        placements.sort();
+        let example_pl = if placements.is_empty() { None } else {
+            let idx = (g.board.moves_made as usize) % placements.len();
+            Some(placements[idx].to_lowercase())
+        };
+        (best_jump, example_pl)
+    } else {
+        (None, None)
+    };
+
+    // Callbacks that fill the text input with an example and trigger preview
+    let make_fill = |mv: String| {
+        let move_input = move_input.clone();
+        let preview_board = preview_board.clone();
+        let move_error = move_error.clone();
+        let game = game.clone();
+        Callback::from(move |_: MouseEvent| {
+            let upper = mv.to_uppercase();
+            let all_moves = (*game).board.get_all_moves();
+            if let Some(b) = all_moves.get(&upper).or_else(|| all_moves.get(&format!("{} ", upper))) {
+                move_input.set(mv.clone());
+                preview_board.set(Some(b.clone()));
+                move_error.set(None);
+            }
+        })
+    };
+    let on_example_jump      = example_jump.clone().map(|mv| make_fill(mv));
+    let on_example_placement = example_placement.clone().map(|mv| make_fill(mv));
     html! {
         <div style="font-family:sans-serif;margin:10px;background:#f4f4f4;min-height:100vh;">
             <h1 style="margin:0 0 8px;font-size:18px;">{"Phutball (Philosopher\u{2019}s Football)"}</h1>
@@ -527,12 +549,8 @@ fn app() -> Html {
                     <input type="text"
                            value={cur_input}
                            oninput={on_move_input}
-                           placeholder="Enter move (e.g. A5, E , E NE )"
-                           style="padding:4px 8px;font-size:14px;width:220px;"/>
-                    <button onclick={on_preview}
-                            style="padding:4px 10px;cursor:pointer;font-size:13px;">
-                        {"Preview"}
-                    </button>
+                           placeholder="e.g. a5 or e ne"
+                           style="padding:4px 8px;font-size:14px;width:180px;"/>
                     <button onclick={on_confirm}
                             disabled={!has_preview}
                             style="padding:4px 10px;cursor:pointer;font-size:13px;">
@@ -540,6 +558,21 @@ fn app() -> Html {
                     </button>
                     if let Some(ref err) = error_msg {
                         <span style="color:red;font-size:13px;">{err}</span>
+                    }
+                </div>
+                <div style="margin-top:4px;font-size:12px;color:#666;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    {"e.g. "}
+                    if let (Some(ref label), Some(cb)) = (example_jump.clone(), on_example_jump) {
+                        <button onclick={cb}
+                                style="font-size:12px;padding:2px 6px;cursor:pointer;background:#e8e8e8;border:1px solid #bbb;border-radius:3px;">
+                            {format!("{} (jump)", label)}
+                        </button>
+                    }
+                    if let (Some(ref label), Some(cb)) = (example_placement.clone(), on_example_placement) {
+                        <button onclick={cb}
+                                style="font-size:12px;padding:2px 6px;cursor:pointer;background:#e8e8e8;border:1px solid #bbb;border-radius:3px;">
+                            {format!("{} (place)", label)}
+                        </button>
                     }
                 </div>
             }
@@ -556,7 +589,7 @@ fn app() -> Html {
             <div style="margin-top:8px;font-size:12px;color:#555;max-width:620px;">
                 <b>{"Rules: "}</b>
                 {"Left tries to move the ball to the right edge (column 19); Right to the left edge (column 1). "}
-                {"On your turn: type a move and click Preview, then Confirm. Man placement: row letter + column (e.g. A5). "}
+                {"On your turn: type a move (case-insensitive) — a preview appears automatically — then click Confirm. Man placement: row letter + column (e.g. a5). "}
                 {"Ball jump: direction + space (e.g. E ). Chain jumps with spaces (e.g. E NE )."}
             </div>
 
