@@ -1004,31 +1004,228 @@ impl Eval5Engine {
 }
 
 // ============================================================================
+// Eval6: beam search forward pruning (best engine)
+// ============================================================================
+
+const BEAM_K: usize = 8;
+
+struct JumpChainEvaluator;
+
+impl JumpChainEvaluator {
+    fn count_chain(board: &Board, from: Position, dir: Direction) -> usize {
+        let delta = dir.delta();
+        let mut count = 0;
+        let mut pos = from;
+        loop {
+            match pos.checked_add(delta) {
+                Some(next) if next.is_on_board() => {
+                    if board.get(next) == Piece::Man {
+                        count += 1;
+                        pos = next;
+                    } else {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        count
+    }
+
+    fn score(board: &Board) -> f64 {
+        let mut location = board.ball_at.col as i32;
+        if location <= 0 { location = 0; }
+        if location >= LENGTH as i32 - 1 { location = LENGTH as i32 - 1; }
+        let raw_progress = location as f64 / (LENGTH - 1) as f64;
+        let progress = match board.side_to_move {
+            Side::Left  => raw_progress,
+            Side::Right => 1.0 - raw_progress,
+        };
+        let mut best_chain = 0usize;
+        for dir in Direction::ALL {
+            let chain = Self::count_chain(board, board.ball_at, dir);
+            if chain > best_chain { best_chain = chain; }
+        }
+        let chain_score = (best_chain as f64 / 10.0).min(1.0);
+        0.5 * progress + 0.5 * chain_score
+    }
+}
+
+struct Eval6Engine {
+    budget_ms: u64,
+    eval_fn: fn(&Board) -> f64,
+}
+
+impl Eval6Engine {
+    fn new(budget_ms: u64) -> Self {
+        Self { budget_ms, eval_fn: Eval4Evaluator::score }
+    }
+
+    fn negamax(
+        &self,
+        board: &Board,
+        depth: u32,
+        mut alpha: f64,
+        mut beta: f64,
+        deadline: f64,
+        nodes: &mut u64,
+        tt: &mut TTable,
+        zt: &ZobristTable,
+    ) -> Option<f64> {
+        *nodes += 1;
+        if *nodes % 1000 == 0 && now_ms() >= deadline {
+            return None;
+        }
+        if let Some(winner) = board.check_winner() {
+            return Some(if winner == board.side_to_move { 1.0 } else { 0.0 });
+        }
+        if depth == 0 {
+            return Some((self.eval_fn)(board));
+        }
+        let hash = zobrist_hash(board, zt);
+        let alpha_orig = alpha;
+        let mut tt_best_hash = 0u64;
+        if let Some(entry) = tt.probe(hash) {
+            tt_best_hash = entry.best_next_hash;
+            if entry.depth >= depth {
+                match entry.node_type {
+                    NodeType::Exact => return Some(entry.score),
+                    NodeType::LowerBound => alpha = alpha.max(entry.score),
+                    NodeType::UpperBound => beta = beta.min(entry.score),
+                }
+                if alpha >= beta { return Some(entry.score); }
+            }
+        }
+        let ball_pos = board.ball_at;
+        let all_children = board.get_nearby_boards();
+        let (jumps, mut placements): (Vec<Board>, Vec<Board>) =
+            all_children.into_iter().partition(|b| b.ball_at != ball_pos);
+        if depth >= 2 && placements.len() > BEAM_K {
+            let tt_best = if tt_best_hash != 0 {
+                placements.iter().position(|b| zobrist_hash(b, zt) == tt_best_hash)
+                    .map(|pos| placements.swap_remove(pos))
+            } else {
+                None
+            };
+            placements.sort_unstable_by(|a, b| {
+                JumpChainEvaluator::score(b)
+                    .partial_cmp(&JumpChainEvaluator::score(a))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            placements.truncate(BEAM_K);
+            if let Some(tt_board) = tt_best {
+                placements.push(tt_board);
+                let last = placements.len() - 1;
+                placements.swap(0, last);
+            }
+        }
+        let ordered: Vec<&Board> = jumps.iter().chain(placements.iter()).collect();
+        let mut max_score = 0.0_f64;
+        let mut found_any = false;
+        let mut best_idx: usize = 0;
+        for (i, next_board) in ordered.iter().enumerate() {
+            let score = match self.negamax(
+                next_board, depth - 1, 1.0 - beta, 1.0 - alpha, deadline, nodes, tt, zt,
+            ) {
+                Some(s) => 1.0 - s,
+                None => return None,
+            };
+            if !found_any || score > max_score {
+                max_score = score;
+                found_any = true;
+                best_idx = i;
+            }
+            alpha = alpha.max(score);
+            if alpha >= beta { break; }
+        }
+        let best_next_hash = if found_any { zobrist_hash(ordered[best_idx], zt) } else { 0 };
+        let node_type = if max_score <= alpha_orig {
+            NodeType::UpperBound
+        } else if alpha >= beta {
+            NodeType::LowerBound
+        } else {
+            NodeType::Exact
+        };
+        tt.store(hash, depth, max_score, node_type, best_next_hash);
+        Some(max_score)
+    }
+
+    fn make_move(&self, board: &Board) -> String {
+        let deadline = now_ms() + self.budget_ms as f64;
+        let zt = get_zobrist();
+        let moves_map = board.get_all_nearby_moves();
+        if moves_map.is_empty() { return String::new(); }
+        let mut moves: Vec<(String, Board)> = moves_map.into_iter().collect();
+        let mut best_move = moves[0].0.clone();
+        let mut depth = 1u32;
+        let mut tt = TTable::new();
+        let mut prev_score = 0.5_f64;
+        const DELTA: f64 = 0.15;
+        'depth: loop {
+            let (mut alpha, mut beta) = if depth < 2 {
+                (0.0_f64, 1.0_f64)
+            } else {
+                ((prev_score - DELTA).max(0.0), (prev_score + DELTA).min(1.0))
+            };
+            loop {
+                let mut nodes: u64 = 0;
+                let mut depth_best_idx = 0usize;
+                let mut depth_best_score = f64::NEG_INFINITY;
+                let mut timed_out = false;
+                for (idx, (_mv, next_board)) in moves.iter().enumerate() {
+                    match self.negamax(
+                        next_board, depth - 1, 1.0 - beta, 1.0 - alpha,
+                        deadline, &mut nodes, &mut tt, zt,
+                    ) {
+                        Some(s) => {
+                            let score = 1.0 - s;
+                            if score > depth_best_score
+                                || (score == depth_best_score && moves[idx].0 < moves[depth_best_idx].0)
+                            {
+                                depth_best_score = score;
+                                depth_best_idx = idx;
+                            }
+                        }
+                        None => { timed_out = true; break; }
+                    }
+                }
+                if timed_out { break 'depth; }
+                let at_full_window = alpha <= 0.0 && beta >= 1.0;
+                if depth_best_score <= alpha && !at_full_window {
+                    alpha = (alpha - DELTA).max(0.0);
+                } else if depth_best_score >= beta && !at_full_window {
+                    beta = (beta + DELTA).min(1.0);
+                } else {
+                    best_move = moves[depth_best_idx].0.clone();
+                    moves.swap(0, depth_best_idx);
+                    prev_score = depth_best_score;
+                    depth += 1;
+                    break;
+                }
+                if now_ms() >= deadline { break 'depth; }
+            }
+            if now_ms() >= deadline { break; }
+        }
+        best_move
+    }
+}
+
+// ============================================================================
 // Engine enum (dispatcher)
 // ============================================================================
 
 enum Engine {
     Human,
     Plodding,
-    AlphaBeta(AlphaBetaEngine),
-    Eval2(Eval2Engine),
-    Eval5(Eval5Engine),
+    Eval6(Eval6Engine),
 }
 
 impl Engine {
     fn from_spec(spec: &str, budget_ms: u64) -> Engine {
-        let parts: Vec<&str> = spec.split(':').collect();
-        match parts[0] {
+        match spec {
             "human" => Engine::Human,
             "plodding" => Engine::Plodding,
-            "alphabeta" => {
-                let depth = parts.get(1)
-                    .and_then(|s| s.parse::<u32>().ok())
-                    .unwrap_or(3);
-                Engine::AlphaBeta(AlphaBetaEngine::new(depth))
-            }
-            "eval2" => Engine::Eval2(Eval2Engine::new(budget_ms)),
-            "eval5" => Engine::Eval5(Eval5Engine::new(budget_ms)),
+            "eval6" => Engine::Eval6(Eval6Engine::new(budget_ms)),
             _ => Engine::Human,
         }
     }
@@ -1041,9 +1238,7 @@ impl Engine {
         match self {
             Engine::Human => String::new(),
             Engine::Plodding => PloddingEngine::make_move(board),
-            Engine::AlphaBeta(e) => e.make_move(board),
-            Engine::Eval2(e) => e.make_move(board),
-            Engine::Eval5(e) => e.make_move(board),
+            Engine::Eval6(e) => e.make_move(board),
         }
     }
 }
@@ -1249,10 +1444,10 @@ fn board_svg(board: &Board, cell: i32, pad_l: i32, pad_t: i32) -> Html {
 
 #[function_component(App)]
 fn app() -> Html {
-    let left_spec = use_state(|| "eval5".to_string());
+    let left_spec = use_state(|| "eval6".to_string());
     let right_spec = use_state(|| "human".to_string());
-    let budget_ms = use_state(|| 500u64);
-    let game = use_state(|| GameState::new("eval5", "human", 500));
+    let budget_secs = use_state(|| 5u64);
+    let game = use_state(|| GameState::new("eval6", "human", 5000));
     let move_input: UseStateHandle<String> = use_state(|| String::new());
     let preview_board: UseStateHandle<Option<Board>> = use_state(|| None);
     let move_error: UseStateHandle<Option<String>> = use_state(|| None);
@@ -1280,12 +1475,12 @@ fn app() -> Html {
         let game = game.clone();
         let left_spec = left_spec.clone();
         let right_spec = right_spec.clone();
-        let budget_ms = budget_ms.clone();
+        let budget_secs = budget_secs.clone();
         let move_input = move_input.clone();
         let preview_board = preview_board.clone();
         let move_error = move_error.clone();
         Callback::from(move |_: MouseEvent| {
-            game.set(GameState::new(&left_spec, &right_spec, *budget_ms));
+            game.set(GameState::new(&left_spec, &right_spec, *budget_secs * 1000));
             move_input.set(String::new());
             preview_board.set(None);
             move_error.set(None);
@@ -1314,11 +1509,11 @@ fn app() -> Html {
 
     // Budget slider
     let on_budget_input = {
-        let budget_ms = budget_ms.clone();
+        let budget_secs = budget_secs.clone();
         Callback::from(move |e: web_sys::InputEvent| {
             if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
                 if let Ok(v) = el.value().parse::<u64>() {
-                    budget_ms.set(v);
+                    budget_secs.set(v);
                 }
             }
         })
@@ -1397,7 +1592,7 @@ fn app() -> Html {
     let status = g.status_text();
     let lv = (*left_spec).clone();
     let rv = (*right_spec).clone();
-    let bv = *budget_ms;
+    let bv = *budget_secs;
     let cur_input = (*move_input).clone();
     let has_preview = (*preview_board).is_some();
     let is_human_active = g.is_human_turn() && g.winner().is_none();
@@ -1411,27 +1606,21 @@ fn app() -> Html {
             <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px;">
                 <label>{"Left: "}
                     <select onchange={on_left_change}>
-                        <option value="human"       selected={lv == "human"}>{"Human"}</option>
-                        <option value="plodding"    selected={lv == "plodding"}>{"Plodding"}</option>
-                        <option value="alphabeta:3" selected={lv == "alphabeta:3"}>{"AlphaBeta-3"}</option>
-                        <option value="alphabeta:4" selected={lv == "alphabeta:4"}>{"AlphaBeta-4"}</option>
-                        <option value="eval2"       selected={lv == "eval2"}>{"Eval2"}</option>
-                        <option value="eval5"       selected={lv == "eval5"}>{"Eval5"}</option>
+                        <option value="human"    selected={lv == "human"}>{"Human"}</option>
+                        <option value="plodding" selected={lv == "plodding"}>{"Plodding"}</option>
+                        <option value="eval6"    selected={lv == "eval6"}>{"Beam Search"}</option>
                     </select>
                 </label>
                 <label>{"Right: "}
                     <select onchange={on_right_change}>
-                        <option value="human"       selected={rv == "human"}>{"Human"}</option>
-                        <option value="plodding"    selected={rv == "plodding"}>{"Plodding"}</option>
-                        <option value="alphabeta:3" selected={rv == "alphabeta:3"}>{"AlphaBeta-3"}</option>
-                        <option value="alphabeta:4" selected={rv == "alphabeta:4"}>{"AlphaBeta-4"}</option>
-                        <option value="eval2"       selected={rv == "eval2"}>{"Eval2"}</option>
-                        <option value="eval5"       selected={rv == "eval5"}>{"Eval5"}</option>
+                        <option value="human"    selected={rv == "human"}>{"Human"}</option>
+                        <option value="plodding" selected={rv == "plodding"}>{"Plodding"}</option>
+                        <option value="eval6"    selected={rv == "eval6"}>{"Beam Search"}</option>
                     </select>
                 </label>
                 <label>
-                    {format!("Budget: {}ms", bv)}
-                    <input type="range" min="100" max="2000" step="100"
+                    {format!("{}s per move", bv)}
+                    <input type="range" min="1" max="60" step="1"
                            value={bv.to_string()}
                            oninput={on_budget_input}/>
                 </label>
