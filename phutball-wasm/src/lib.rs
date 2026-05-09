@@ -50,8 +50,8 @@ struct GameState {
     right_spec: String,
     budget_ms: u64,
     ball_selected: bool,
-    // (move_name, dest_row, dest_col) for available ball jumps
     jump_dests: Vec<(String, usize, usize)>,
+    history: Vec<String>,
 }
 
 impl GameState {
@@ -63,6 +63,7 @@ impl GameState {
             budget_ms,
             ball_selected: false,
             jump_dests: vec![],
+            history: vec![],
         }
     }
 
@@ -89,6 +90,7 @@ impl GameState {
         if mv.is_empty() { return false; }
         let moves = self.board.get_all_moves();
         if let Some(new_board) = moves.get(&mv) {
+            self.history.push(mv.trim().to_string());
             self.board = new_board.clone();
             true
         } else {
@@ -100,6 +102,7 @@ impl GameState {
         if self.winner().is_some() { return false; }
         let moves = self.board.get_all_moves();
         if let Some(new_board) = moves.get(mv) {
+            self.history.push(mv.trim().to_string());
             self.board = new_board.clone();
             self.ball_selected = false;
             self.jump_dests.clear();
@@ -107,6 +110,7 @@ impl GameState {
         }
         let with_space = format!("{} ", mv);
         if let Some(new_board) = moves.get(&with_space) {
+            self.history.push(mv.trim().to_string());
             self.board = new_board.clone();
             self.ball_selected = false;
             self.jump_dests.clear();
@@ -395,6 +399,10 @@ fn app() -> Html {
     let is_human_active = g.is_human_turn() && g.winner().is_none();
     let preview_svg = (*preview_board).as_ref().map(|b| board_svg(b, 18, 28, 22));
     let error_msg = (*move_error).clone();
+    let history_text = g.history.iter().enumerate()
+        .map(|(i, mv)| format!("{}. {}", i + 1, mv))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     html! {
         <div style="font-family:sans-serif;margin:10px;background:#f4f4f4;min-height:100vh;">
@@ -470,6 +478,15 @@ fn app() -> Html {
                 {"On your turn: type a move and click Preview, then Confirm. Man placement: row letter + column (e.g. A5). "}
                 {"Ball jump: direction + space (e.g. E ). Chain jumps with spaces (e.g. E NE )."}
             </div>
+
+            if !history_text.is_empty() {
+                <div style="margin-top:8px;">
+                    <div style="font-size:12px;font-weight:bold;margin-bottom:2px;">{"Move record:"}</div>
+                    <textarea readonly=true
+                              style="width:100%;max-width:620px;height:80px;font-family:monospace;font-size:12px;resize:vertical;box-sizing:border-box;"
+                              value={history_text}/>
+                </div>
+            }
         </div>
     }
 }
