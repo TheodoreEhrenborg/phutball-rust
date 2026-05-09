@@ -1,0 +1,7 @@
+[package]
+name = "phutball-core"
+version = "0.1.0"
+edition = "2021"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"

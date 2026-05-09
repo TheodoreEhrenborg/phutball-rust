@@ -1,5 +1,5 @@
 [workspace]
-members = ["phutball-wasm"]
+members = ["phutball-wasm", "phutball-core"]
 
 [package]
 name = "phutball-rust"
@@ -12,3 +12,4 @@ edition = "2018"
 clap = { version = "4.5", features = ["derive"] }
 rayon = "1.10"
 burn = { version = "0.16", features = ["ndarray"] }  # CPU backend (Phase 2 training)
+phutball-core = { path = "phutball-core" }

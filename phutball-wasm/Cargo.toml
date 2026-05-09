@@ -15,3 +15,4 @@ web-sys = { version = "0.3", features = ["HtmlSelectElement", "HtmlInputElement"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 getrandom = { version = "0.2", features = ["js"] }
+phutball-core = { path = "../phutball-core" }
