@@ -6,33 +6,34 @@ use wasm_bindgen::JsCast;
 use yew::prelude::*;
 use gloo::timers::callback::Timeout;
 
-// Hash format: #<left>/<right>/<secs>/<move1>/<move2>/...
-// e.g.  #human/eval6/5/A5/E/B7/E-NE
+// Hash format: #<left>/<right>/<left_secs>/<right_secs>/<move1>/<move2>/...
+// e.g.  #human/eval6/1/5/A5/E/B7/E-NE
 // Spaces inside a move (chain jumps) are encoded as '-'.
 
 fn valid_spec(s: &str) -> bool {
     matches!(s, "human" | "plodding" | "eval6")
 }
 
-fn parse_hash(hash: &str) -> (String, String, u64, Vec<String>) {
+fn parse_hash(hash: &str) -> (String, String, u64, u64, Vec<String>) {
     let h = hash.trim_start_matches('#');
     let mut parts = h.split('/');
-    let left  = parts.next().unwrap_or("");
-    let right = parts.next().unwrap_or("");
-    let secs  = parts.next().unwrap_or("").parse::<u64>().unwrap_or(0);
+    let left       = parts.next().unwrap_or("");
+    let right      = parts.next().unwrap_or("");
+    let left_secs  = parts.next().unwrap_or("").parse::<u64>().unwrap_or(0);
+    let right_secs = parts.next().unwrap_or("").parse::<u64>().unwrap_or(0);
     let moves: Vec<String> = parts
         .filter(|s| !s.is_empty())
         .map(|s| s.replace('-', " "))
         .collect();
-    if valid_spec(left) && valid_spec(right) && secs >= 1 {
-        (left.to_string(), right.to_string(), secs, moves)
+    if valid_spec(left) && valid_spec(right) && left_secs >= 1 && right_secs >= 1 {
+        (left.to_string(), right.to_string(), left_secs, right_secs, moves)
     } else {
-        ("eval6".to_string(), "human".to_string(), 1, vec![])
+        ("eval6".to_string(), "human".to_string(), 1, 1, vec![])
     }
 }
 
-fn build_hash(left: &str, right: &str, secs: u64, history: &[String]) -> String {
-    let mut parts = vec![left.to_string(), right.to_string(), secs.to_string()];
+fn build_hash(left: &str, right: &str, ls: u64, rs: u64, history: &[String]) -> String {
+    let mut parts = vec![left.to_string(), right.to_string(), ls.to_string(), rs.to_string()];
     parts.extend(history.iter().map(|m| m.replace(' ', "-")));
     parts.join("/")
 }
@@ -79,19 +80,21 @@ struct GameState {
     board: Board,
     left_spec: String,
     right_spec: String,
-    budget_ms: u64,
+    left_budget_ms: u64,
+    right_budget_ms: u64,
     ball_selected: bool,
     jump_dests: Vec<(String, usize, usize)>,
     history: Vec<String>,
 }
 
 impl GameState {
-    fn new(left: &str, right: &str, budget_ms: u64) -> Self {
+    fn new(left: &str, right: &str, left_ms: u64, right_ms: u64) -> Self {
         Self {
             board: Board::new(),
             left_spec: left.to_string(),
             right_spec: right.to_string(),
-            budget_ms,
+            left_budget_ms: left_ms,
+            right_budget_ms: right_ms,
             ball_selected: false,
             jump_dests: vec![],
             history: vec![],
@@ -100,8 +103,8 @@ impl GameState {
 
     fn current_engine(&self) -> Engine {
         match self.board.side_to_move {
-            Side::Left => Engine::from_spec(&self.left_spec, self.budget_ms),
-            Side::Right => Engine::from_spec(&self.right_spec, self.budget_ms),
+            Side::Left  => Engine::from_spec(&self.left_spec,  self.left_budget_ms),
+            Side::Right => Engine::from_spec(&self.right_spec, self.right_budget_ms),
         }
     }
 
@@ -278,13 +281,14 @@ fn app() -> Html {
     let init_hash = web_sys::window()
         .and_then(|w| w.location().hash().ok())
         .unwrap_or_default();
-    let (init_left, init_right, init_secs, init_moves) = parse_hash(&init_hash);
+    let (init_left, init_right, init_ls, init_rs, init_moves) = parse_hash(&init_hash);
 
-    let left_spec    = use_state(|| init_left.clone());
-    let right_spec   = use_state(|| init_right.clone());
-    let budget_secs  = use_state(|| init_secs);
+    let left_spec         = use_state(|| init_left.clone());
+    let right_spec        = use_state(|| init_right.clone());
+    let left_budget_secs  = use_state(|| init_ls);
+    let right_budget_secs = use_state(|| init_rs);
     let game = use_state(|| {
-        let mut gs = GameState::new(&init_left, &init_right, init_secs * 1000);
+        let mut gs = GameState::new(&init_left, &init_right, init_ls * 1000, init_rs * 1000);
         for mv in init_moves {
             if !gs.play_human_move(&mv) { break; }
         }
@@ -294,17 +298,19 @@ fn app() -> Html {
     let preview_board: UseStateHandle<Option<Board>> = use_state(|| None);
     let move_error: UseStateHandle<Option<String>> = use_state(|| None);
 
-    // Keep URL hash in sync with full game state (players + budget + moves)
+    // Keep URL hash in sync with full game state
     {
-        let game       = game.clone();
-        let left_spec  = left_spec.clone();
-        let right_spec = right_spec.clone();
-        let budget_secs = budget_secs.clone();
+        let game              = game.clone();
+        let left_spec         = left_spec.clone();
+        let right_spec        = right_spec.clone();
+        let left_budget_secs  = left_budget_secs.clone();
+        let right_budget_secs = right_budget_secs.clone();
         use_effect_with(
-            ((*game).history.clone(), (*left_spec).clone(), (*right_spec).clone(), *budget_secs),
-            move |(history, left, right, secs)| {
+            ((*game).history.clone(), (*left_spec).clone(), (*right_spec).clone(),
+             *left_budget_secs, *right_budget_secs),
+            move |(history, left, right, ls, rs)| {
                 if let Some(window) = web_sys::window() {
-                    let _ = window.location().set_hash(&build_hash(left, right, *secs, history));
+                    let _ = window.location().set_hash(&build_hash(left, right, *ls, *rs, history));
                 }
                 || ()
             },
@@ -331,15 +337,17 @@ fn app() -> Html {
 
     // New game
     let on_new_game = {
-        let game = game.clone();
-        let left_spec = left_spec.clone();
-        let right_spec = right_spec.clone();
-        let budget_secs = budget_secs.clone();
-        let move_input = move_input.clone();
+        let game              = game.clone();
+        let left_spec         = left_spec.clone();
+        let right_spec        = right_spec.clone();
+        let left_budget_secs  = left_budget_secs.clone();
+        let right_budget_secs = right_budget_secs.clone();
+        let move_input    = move_input.clone();
         let preview_board = preview_board.clone();
-        let move_error = move_error.clone();
+        let move_error    = move_error.clone();
         Callback::from(move |_: MouseEvent| {
-            game.set(GameState::new(&left_spec, &right_spec, *budget_secs * 1000));
+            game.set(GameState::new(&left_spec, &right_spec,
+                                    *left_budget_secs * 1000, *right_budget_secs * 1000));
             move_input.set(String::new());
             preview_board.set(None);
             move_error.set(None);
@@ -366,13 +374,22 @@ fn app() -> Html {
         })
     };
 
-    // Budget text input
-    let on_budget_change = {
-        let budget_secs = budget_secs.clone();
+    // Budget text inputs
+    let on_left_budget_change = {
+        let left_budget_secs = left_budget_secs.clone();
         Callback::from(move |e: web_sys::Event| {
             let el = e.target_unchecked_into::<web_sys::HtmlInputElement>();
             if let Ok(v) = el.value().parse::<u64>() {
-                if v >= 1 { budget_secs.set(v); }
+                if v >= 1 { left_budget_secs.set(v); }
+            }
+        })
+    };
+    let on_right_budget_change = {
+        let right_budget_secs = right_budget_secs.clone();
+        Callback::from(move |e: web_sys::Event| {
+            let el = e.target_unchecked_into::<web_sys::HtmlInputElement>();
+            if let Ok(v) = el.value().parse::<u64>() {
+                if v >= 1 { right_budget_secs.set(v); }
             }
         })
     };
@@ -446,11 +463,12 @@ fn app() -> Html {
         })
     };
 
-    let g = &*game;
+    let g   = &*game;
     let status = g.status_text();
-    let lv = (*left_spec).clone();
-    let rv = (*right_spec).clone();
-    let bv = *budget_secs;
+    let lv  = (*left_spec).clone();
+    let rv  = (*right_spec).clone();
+    let lbs = *left_budget_secs;
+    let rbs = *right_budget_secs;
     let cur_input = (*move_input).clone();
     let has_preview = (*preview_board).is_some();
     let is_human_active = g.is_human_turn() && g.winner().is_none();
@@ -468,6 +486,14 @@ fn app() -> Html {
                         <option value="eval6"    selected={lv == "eval6"}>{"Beam Search"}</option>
                     </select>
                 </label>
+                if lv == "eval6" {
+                    <label>{"Left secs: "}
+                        <input type="number" min="1" max="3600" step="1"
+                               value={lbs.to_string()}
+                               onchange={on_left_budget_change}
+                               style="width:60px;"/>
+                    </label>
+                }
                 <label>{"Right: "}
                     <select onchange={on_right_change}>
                         <option value="human"    selected={rv == "human"}>{"Human"}</option>
@@ -475,12 +501,14 @@ fn app() -> Html {
                         <option value="eval6"    selected={rv == "eval6"}>{"Beam Search"}</option>
                     </select>
                 </label>
-                <label>{"Seconds per move: "}
-                    <input type="number" min="1" max="3600" step="1"
-                           value={bv.to_string()}
-                           onchange={on_budget_change}
-                           style="width:60px;"/>
-                </label>
+                if rv == "eval6" {
+                    <label>{"Right secs: "}
+                        <input type="number" min="1" max="3600" step="1"
+                               value={rbs.to_string()}
+                               onchange={on_right_budget_change}
+                               style="width:60px;"/>
+                    </label>
+                }
                 <button onclick={on_new_game} style="padding:6px 12px;cursor:pointer;font-size:13px;">
                     {"New Game"}
                 </button>
@@ -556,13 +584,13 @@ mod tests {
     #[test]
     fn yew_app_compiles() {
         // Verifies core game logic works; full WASM test is: wasm-pack build phutball-wasm --target web
-        let gs = GameState::new("human", "human", 500);
+        let gs = GameState::new("human", "human", 500, 500);
         assert_eq!(gs.board.moves_made, 0);
         assert!(gs.winner().is_none());
         assert!(!gs.ball_selected);
 
         // Plodding engine doesn't use js_sys timing, safe to call in native tests
-        let mut gs2 = GameState::new("plodding", "plodding", 100);
+        let mut gs2 = GameState::new("plodding", "plodding", 100, 100);
         gs2.play_engine_move();
         assert_eq!(gs2.board.moves_made, 1);
     }
