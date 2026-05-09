@@ -309,13 +309,14 @@ fn app() -> Html {
         })
     };
 
-    // Budget slider — use onchange+Event+target_unchecked_into to avoid InputEvent cast issues
+    // Budget text input
     let on_budget_change = {
         let budget_secs = budget_secs.clone();
         Callback::from(move |e: web_sys::Event| {
             let el = e.target_unchecked_into::<web_sys::HtmlInputElement>();
-            let v = el.value_as_number() as u64;
-            if v >= 1 { budget_secs.set(v); }
+            if let Ok(v) = el.value().parse::<u64>() {
+                if v >= 1 { budget_secs.set(v); }
+            }
         })
     };
 
@@ -427,7 +428,6 @@ fn app() -> Html {
     let lv = (*left_spec).clone();
     let rv = (*right_spec).clone();
     let bv = *budget_secs;
-    let blabel = format!("{}s per move", bv);
     let cur_input = (*move_input).clone();
     let has_preview = (*preview_board).is_some();
     let is_human_active = g.is_human_turn() && g.winner().is_none();
@@ -455,10 +455,11 @@ fn app() -> Html {
                         <option value="eval6"    selected={rv == "eval6"}>{"Beam Search"}</option>
                     </select>
                 </label>
-                <label>
-                    {blabel}
-                    <input type="range" min="1" max="60" step="1"
-                           onchange={on_budget_change}/>
+                <label>{"Seconds per move: "}
+                    <input type="number" min="1" max="3600" step="1"
+                           value={bv.to_string()}
+                           onchange={on_budget_change}
+                           style="width:60px;"/>
                 </label>
                 <button onclick={on_new_game} style="padding:6px 12px;cursor:pointer;font-size:13px;">
                     {"New Game"}
