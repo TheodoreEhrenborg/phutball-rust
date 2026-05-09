@@ -1446,8 +1446,9 @@ fn board_svg(board: &Board, cell: i32, pad_l: i32, pad_t: i32) -> Html {
 fn app() -> Html {
     let left_spec = use_state(|| "eval6".to_string());
     let right_spec = use_state(|| "human".to_string());
-    let budget_secs = use_state(|| 5u64);
-    let game = use_state(|| GameState::new("eval6", "human", 5000));
+    let budget_secs = use_state(|| 1u64);
+    let budget_label = use_state(|| "1s per move".to_string());
+    let game = use_state(|| GameState::new("eval6", "human", 1000));
     let move_input: UseStateHandle<String> = use_state(|| String::new());
     let preview_board: UseStateHandle<Option<Board>> = use_state(|| None);
     let move_error: UseStateHandle<Option<String>> = use_state(|| None);
@@ -1510,10 +1511,12 @@ fn app() -> Html {
     // Budget slider
     let on_budget_input = {
         let budget_secs = budget_secs.clone();
+        let budget_label = budget_label.clone();
         Callback::from(move |e: web_sys::InputEvent| {
             if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
                 if let Ok(v) = el.value().parse::<u64>() {
                     budget_secs.set(v);
+                    budget_label.set(format!("{}s per move", v));
                 }
             }
         })
@@ -1593,6 +1596,7 @@ fn app() -> Html {
     let lv = (*left_spec).clone();
     let rv = (*right_spec).clone();
     let bv = *budget_secs;
+    let blabel = (*budget_label).clone();
     let cur_input = (*move_input).clone();
     let has_preview = (*preview_board).is_some();
     let is_human_active = g.is_human_turn() && g.winner().is_none();
@@ -1619,7 +1623,7 @@ fn app() -> Html {
                     </select>
                 </label>
                 <label>
-                    {format!("{}s per move", bv)}
+                    {blabel}
                     <input type="range" min="1" max="60" step="1"
                            value={bv.to_string()}
                            oninput={on_budget_input}/>
