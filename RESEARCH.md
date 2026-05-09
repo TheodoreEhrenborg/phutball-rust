@@ -5,6 +5,25 @@ what was tried, what worked, what failed, and why.
 
 ---
 
+> **⚠️ Warning — tournament validity concern (2026-05-09)**
+>
+> The 3-0 results in the engine ladder below are suspicious. The tournaments
+> used random starting men, but those men were likely placed far from the ball
+> (drawn uniformly from the whole board). If both engines start with their
+> pieces far away, the early game is nearly identical regardless of engine
+> quality — the differences only show up once pieces organically cluster near
+> the ball, which may not happen within the game lengths tested.
+>
+> A better baseline: place **4 white pieces at random within the 5×5 square
+> nearest to the ball** at game start. This creates meaningful mid-game
+> positions immediately and should reveal real differences in engine strength.
+> The existing ladder results should be treated as tentative until re-run with
+> this initialisation.
+
+---
+
+# 2026-05-09 Research Notes
+
 ## Engine Ladder (Current State)
 
 | Engine | Player Spec | vs. Previous | Confidence | Typical Depth | Notes |
