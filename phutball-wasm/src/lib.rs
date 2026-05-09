@@ -5,7 +5,16 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use yew::prelude::*;
 use gloo::timers::callback::Timeout;
-use serde_json;
+
+fn moves_from_hash(hash: &str) -> Vec<String> {
+    let h = hash.trim_start_matches('#');
+    if h.is_empty() { return vec![]; }
+    h.split('/').filter(|s| !s.is_empty()).map(|s| s.replace('-', " ")).collect()
+}
+
+fn game_hash(history: &[String]) -> String {
+    history.iter().map(|m| m.replace(' ', "-")).collect::<Vec<_>>().join("/")
+}
 
 // ============================================================================
 // Engine enum (dispatcher)
@@ -248,11 +257,30 @@ fn app() -> Html {
     let left_spec = use_state(|| "eval6".to_string());
     let right_spec = use_state(|| "human".to_string());
     let budget_secs = use_state(|| 1u64);
-    let game = use_state(|| GameState::new("eval6", "human", 1000));
+    let game = use_state(|| {
+        let hash = web_sys::window()
+            .and_then(|w| w.location().hash().ok())
+            .unwrap_or_default();
+        let mut gs = GameState::new("eval6", "human", 1000);
+        for mv in moves_from_hash(&hash) {
+            if !gs.play_human_move(&mv) { break; }
+        }
+        gs
+    });
     let move_input: UseStateHandle<String> = use_state(|| String::new());
     let preview_board: UseStateHandle<Option<Board>> = use_state(|| None);
     let move_error: UseStateHandle<Option<String>> = use_state(|| None);
-    let load_input: UseStateHandle<String> = use_state(|| String::new());
+
+    // Keep URL hash in sync with move history
+    {
+        let game = game.clone();
+        use_effect_with((*game).history.clone(), move |history| {
+            if let Some(window) = web_sys::window() {
+                let _ = window.location().set_hash(&game_hash(history));
+            }
+            || ()
+        });
+    }
 
     // Schedule engine moves whenever game state changes
     {
@@ -316,40 +344,6 @@ fn app() -> Html {
             let el = e.target_unchecked_into::<web_sys::HtmlInputElement>();
             if let Ok(v) = el.value().parse::<u64>() {
                 if v >= 1 { budget_secs.set(v); }
-            }
-        })
-    };
-
-    // Load game from JSON
-    let on_load_input_change = {
-        let load_input = load_input.clone();
-        Callback::from(move |e: web_sys::InputEvent| {
-            if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlTextAreaElement>().ok()) {
-                load_input.set(el.value());
-            }
-        })
-    };
-
-    let on_load_game = {
-        let game = game.clone();
-        let left_spec = left_spec.clone();
-        let right_spec = right_spec.clone();
-        let budget_secs = budget_secs.clone();
-        let load_input = load_input.clone();
-        let move_input = move_input.clone();
-        let preview_board = preview_board.clone();
-        let move_error = move_error.clone();
-        Callback::from(move |_: MouseEvent| {
-            let json = (*load_input).clone();
-            if let Ok(moves) = serde_json::from_str::<Vec<String>>(&json) {
-                let mut gs = GameState::new(&left_spec, &right_spec, *budget_secs * 1000);
-                for mv in moves {
-                    if !gs.play_human_move(&mv) { break; }
-                }
-                game.set(gs);
-                move_input.set(String::new());
-                preview_board.set(None);
-                move_error.set(None);
             }
         })
     };
@@ -433,9 +427,6 @@ fn app() -> Html {
     let is_human_active = g.is_human_turn() && g.winner().is_none();
     let preview_svg = (*preview_board).as_ref().map(|b| board_svg(b, 18, 28, 22));
     let error_msg = (*move_error).clone();
-    let history_json = serde_json::to_string(&g.history).unwrap_or_default();
-    let load_val = (*load_input).clone();
-
     html! {
         <div style="font-family:sans-serif;margin:10px;background:#f4f4f4;min-height:100vh;">
             <h1 style="margin:0 0 8px;font-size:18px;">{"Phutball (Philosopher\u{2019}s Football)"}</h1>
@@ -463,17 +454,6 @@ fn app() -> Html {
                 </label>
                 <button onclick={on_new_game} style="padding:6px 12px;cursor:pointer;font-size:13px;">
                     {"New Game"}
-                </button>
-            </div>
-
-            <div style="margin-bottom:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:13px;">
-                <textarea rows="1"
-                          value={load_val}
-                          oninput={on_load_input_change}
-                          placeholder={"Paste JSON move record to load position"}
-                          style="flex:1;min-width:200px;max-width:500px;font-family:monospace;font-size:12px;padding:3px 6px;resize:none;"/>
-                <button onclick={on_load_game} style="padding:6px 12px;cursor:pointer;font-size:13px;">
-                    {"Load"}
                 </button>
             </div>
 
@@ -523,14 +503,6 @@ fn app() -> Html {
                 {"Ball jump: direction + space (e.g. E ). Chain jumps with spaces (e.g. E NE )."}
             </div>
 
-            if !history_json.is_empty() && history_json != "[]" {
-                <div style="margin-top:8px;">
-                    <div style="font-size:12px;font-weight:bold;margin-bottom:2px;">{"Move record (JSON):"}</div>
-                    <textarea readonly=true
-                              style="width:100%;max-width:620px;height:60px;font-family:monospace;font-size:12px;resize:vertical;box-sizing:border-box;"
-                              value={history_json}/>
-                </div>
-            }
         </div>
     }
 }
