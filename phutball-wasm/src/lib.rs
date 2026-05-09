@@ -6,14 +6,35 @@ use wasm_bindgen::JsCast;
 use yew::prelude::*;
 use gloo::timers::callback::Timeout;
 
-fn moves_from_hash(hash: &str) -> Vec<String> {
-    let h = hash.trim_start_matches('#');
-    if h.is_empty() { return vec![]; }
-    h.split('/').filter(|s| !s.is_empty()).map(|s| s.replace('-', " ")).collect()
+// Hash format: #<left>/<right>/<secs>/<move1>/<move2>/...
+// e.g.  #human/eval6/5/A5/E/B7/E-NE
+// Spaces inside a move (chain jumps) are encoded as '-'.
+
+fn valid_spec(s: &str) -> bool {
+    matches!(s, "human" | "plodding" | "eval6")
 }
 
-fn game_hash(history: &[String]) -> String {
-    history.iter().map(|m| m.replace(' ', "-")).collect::<Vec<_>>().join("/")
+fn parse_hash(hash: &str) -> (String, String, u64, Vec<String>) {
+    let h = hash.trim_start_matches('#');
+    let mut parts = h.split('/');
+    let left  = parts.next().unwrap_or("");
+    let right = parts.next().unwrap_or("");
+    let secs  = parts.next().unwrap_or("").parse::<u64>().unwrap_or(0);
+    let moves: Vec<String> = parts
+        .filter(|s| !s.is_empty())
+        .map(|s| s.replace('-', " "))
+        .collect();
+    if valid_spec(left) && valid_spec(right) && secs >= 1 {
+        (left.to_string(), right.to_string(), secs, moves)
+    } else {
+        ("eval6".to_string(), "human".to_string(), 1, vec![])
+    }
+}
+
+fn build_hash(left: &str, right: &str, secs: u64, history: &[String]) -> String {
+    let mut parts = vec![left.to_string(), right.to_string(), secs.to_string()];
+    parts.extend(history.iter().map(|m| m.replace(' ', "-")));
+    parts.join("/")
 }
 
 // ============================================================================
@@ -254,15 +275,17 @@ fn board_svg(board: &Board, cell: i32, pad_l: i32, pad_t: i32) -> Html {
 
 #[function_component(App)]
 fn app() -> Html {
-    let left_spec = use_state(|| "eval6".to_string());
-    let right_spec = use_state(|| "human".to_string());
-    let budget_secs = use_state(|| 1u64);
+    let init_hash = web_sys::window()
+        .and_then(|w| w.location().hash().ok())
+        .unwrap_or_default();
+    let (init_left, init_right, init_secs, init_moves) = parse_hash(&init_hash);
+
+    let left_spec    = use_state(|| init_left.clone());
+    let right_spec   = use_state(|| init_right.clone());
+    let budget_secs  = use_state(|| init_secs);
     let game = use_state(|| {
-        let hash = web_sys::window()
-            .and_then(|w| w.location().hash().ok())
-            .unwrap_or_default();
-        let mut gs = GameState::new("eval6", "human", 1000);
-        for mv in moves_from_hash(&hash) {
+        let mut gs = GameState::new(&init_left, &init_right, init_secs * 1000);
+        for mv in init_moves {
             if !gs.play_human_move(&mv) { break; }
         }
         gs
@@ -271,15 +294,21 @@ fn app() -> Html {
     let preview_board: UseStateHandle<Option<Board>> = use_state(|| None);
     let move_error: UseStateHandle<Option<String>> = use_state(|| None);
 
-    // Keep URL hash in sync with move history
+    // Keep URL hash in sync with full game state (players + budget + moves)
     {
-        let game = game.clone();
-        use_effect_with((*game).history.clone(), move |history| {
-            if let Some(window) = web_sys::window() {
-                let _ = window.location().set_hash(&game_hash(history));
-            }
-            || ()
-        });
+        let game       = game.clone();
+        let left_spec  = left_spec.clone();
+        let right_spec = right_spec.clone();
+        let budget_secs = budget_secs.clone();
+        use_effect_with(
+            ((*game).history.clone(), (*left_spec).clone(), (*right_spec).clone(), *budget_secs),
+            move |(history, left, right, secs)| {
+                if let Some(window) = web_sys::window() {
+                    let _ = window.location().set_hash(&build_hash(left, right, *secs, history));
+                }
+                || ()
+            },
+        );
     }
 
     // Schedule engine moves whenever game state changes
