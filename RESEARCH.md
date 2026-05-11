@@ -442,3 +442,4 @@ Also 0-3 vs eval2:1000. ~120k sims/second.
 All 4 MCTS variants tested: random rollout, eval-at-leaf, lazy (mcts2),
 beam-guided (beam-mcts). ALL lose to eval5/eval6. MCTS would need GPU-backed
 AlphaZero to be competitive. **CPU ceiling: eval6:1000 (beam K=8, depth 7).**
+# Step 0: dummy commit
