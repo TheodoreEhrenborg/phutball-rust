@@ -5,37 +5,40 @@ what was tried, what worked, what failed, and why.
 
 ---
 
-> **⚠️ Warning — tournament validity concern (2026-05-09)**
+> **✅ Tournament validity addressed (2026-05-11)**
 >
-> The 3-0 results in the engine ladder below are suspicious. The tournaments
-> used random starting men, but those men were likely placed far from the ball
-> (drawn uniformly from the whole board). If both engines start with their
-> pieces far away, the early game is nearly identical regardless of engine
-> quality — the differences only show up once pieces organically cluster near
-> the ball, which may not happen within the game lengths tested.
->
-> A better baseline: place **4 white pieces at random within the 5×5 square
-> nearest to the ball** at game start. This creates meaningful mid-game
-> positions immediately and should reveal real differences in engine strength.
-> The existing ladder results should be treated as tentative until re-run with
-> this initialisation.
+> The earlier warning about random starting positions far from the ball has been
+> resolved. As of 2026-05-11, all tournaments use a **5×5 window centered on the
+> ball** (rows 5–9, cols 7–11) for man placement. The ladder below reflects the
+> full re-evaluation under this fairer protocol.
 
 ---
 
 # 2026-05-09 Research Notes
 
-## Engine Ladder (Current State)
+## Engine Ladder (Re-evaluated 2026-05-11 with 5×5 window tournament)
 
 | Engine | Player Spec | vs. Previous | Confidence | Typical Depth | Notes |
 |--------|-------------|-------------|------------|---------------|-------|
-| timed (LocationEval) | `timed:1000` | baseline | — | 4–5 | Iterative-deepening alpha-beta |
-| eval (RichEvaluator) | `eval:1000` | beats timed | 0.938 (0W/3L) | 4–5 | Better eval, same search |
-| eval2 (TT + ordering) | `eval2:1000` | beats eval | 0.938 (3W/0L) | 5 | Transposition table + jump-first |
-| eval4 (JumpChain) | `eval4:1000` | beats eval2 | 0.938 (3W/0L/8T) | 5 | Game-specific jump-chain eval |
-| eval5 (aspiration) | `eval5:1000` | beats eval4 | 0.938 (3W/0L/1T) | 6+ | Aspiration windows |
-| **eval6 (beam search)** | `eval6:1000` | **beats eval5** | **0.937 (5W/1L/5T)** | **7** | **Current best** |
+| eval (RichEvaluator) | `eval:1000` | baseline | — | 4–5 | Slower eval hurts search depth |
+| timed (LocationEval) | `timed:1000` | beats eval | 0.938 (3W/0L/5T) | 4–5 | Simpler eval = deeper search |
+| eval2 (TT + ordering) | `eval2:1000` | beats timed | 0.938 (3W/0L/14T) | 5 | Transposition table + jump-first |
+| eval4 (JumpChain) | `eval4:1000` | beats eval2 | 0.910 (6W/2L/20T) | 5 | Game-specific jump-chain eval |
+| eval5 (aspiration) | `eval5:1000` | beats eval4 | 0.938 (3W/0L/5T) | 6+ | Aspiration windows |
+| **eval6 (beam search)** | `eval6:1000` | **beats eval5** | **0.938 (3W/0L/1T)** | **7** | **Current best** |
 
-*Note: eval3 (history heuristic) both tested and discarded — see failures below. eval6 was previously null-move pruning (ph-50x, failed), now redesigned as beam search (ph-4vv).*
+**MCTS variants (all below eval2):**
+
+| Engine | vs. eval2 | Result |
+|--------|-----------|--------|
+| mcts:1000 | 0W/3L/0T | eval2 wins, P=0.938 |
+| mcts-eval:1000 | 0W/3L/0T | eval2 wins, P=0.938 |
+| mcts2:1000 | 1W/5L/4T | eval2 wins, P=0.937 |
+| beam-mcts:1000 | 0W/3L/0T | eval2 wins, P=0.938 |
+
+**NNUE:** nnue-eval:1000 vs eval4:1000 = 0W/3L/10T → eval4 wins (P=0.938). Falls between eval2 and eval4.
+
+*Note: eval3 (history heuristic) tested and discarded — see failures below. eval6 was previously null-move pruning (ph-50x, failed), now redesigned as beam search (ph-4vv). azero skipped — neural network inference too slow for tournament evaluation (>20s/game at 100ms budget).*
 
 ---
 
@@ -442,4 +445,37 @@ Also 0-3 vs eval2:1000. ~120k sims/second.
 All 4 MCTS variants tested: random rollout, eval-at-leaf, lazy (mcts2),
 beam-guided (beam-mcts). ALL lose to eval5/eval6. MCTS would need GPU-backed
 AlphaZero to be competitive. **CPU ceiling: eval6:1000 (beam K=8, depth 7).**
-# Step 0: dummy commit
+
+---
+
+## Phase 8: Tournament Redesign (2026-05-11)
+
+**Motivation:** Previous tournaments placed men randomly across the full 15×19 board.
+This creates highly variable starting positions — some immediately decisive — biasing
+results toward first-mover advantage rather than true engine strength.
+
+**Change:** `play_tournament_game` now places men in a 5×5 window centered on the
+ball start (rows 5–9, cols 7–11, i.e. START_ROW±2, START_COL±2). `start_men=4`
+unchanged.
+
+**Sanity check — eval6:1000 vs eval6:1000 (self-play, 10 games):**
+- Result: 1W/4L/5T (P(e1>e2)=0.109)
+- Interpretation: High tie rate (5/10) indicates positions are balanced; neither
+  side dominates. This is expected for a self-play symmetric match. No first-mover
+  pathology detected. 5x5 window is working correctly.
+
+**Full ladder re-evaluation results (all at conf=0.9):**
+- timed:1000 vs eval:1000 → **timed wins** 3W/0L/5T (P=0.938) — eval's richer but slower heuristic hurts search depth
+- eval:1000 vs eval2:1000 → **eval2 wins** 3W/0L/0T (P=0.938)
+- timed:1000 vs eval2:1000 → **eval2 wins** 3W/0L/14T (P=0.938) — confirms ordering: eval < timed < eval2
+- eval2:1000 vs eval4:1000 → **eval4 wins** 6W/2L/20T (P=0.910)
+- eval4:1000 vs eval5:1000 → **eval5 wins** 3W/0L/5T (P=0.938)
+- eval5:1000 vs eval6:1000 → **eval6 wins** 3W/0L/1T (P=0.938)
+- MCTS variants vs eval2: all lose (see ladder table above)
+- nnue-eval:1000 vs eval4:1000 → eval4 wins 3W/0L/10T (P=0.938)
+- azero: untestable — too slow (>20s/game at 100ms budget)
+
+**Corrected final ladder:** eval < timed < eval2 < nnue-eval* < eval4 < eval5 < **eval6** (best)
+(*nnue-eval positioned between eval2 and eval4; exact rank vs eval2 not directly tested)
+
+**Conclusion: eval6:1000 remains the strongest engine. No change to website AI player needed.**

@@ -341,7 +341,7 @@ fn run_tournament(spec1: &str, spec2: &str, confidence: f64, start_men: usize, m
     let mut ties: u32 = 0;
     let mut game_num: u32 = 0;
 
-    println!("Tournament: {} vs {} (confidence={}, start_men={})", spec1, spec2, confidence, start_men);
+    println!("Tournament: {} vs {} (confidence={}, start_men={}, 5x5 window)", spec1, spec2, confidence, start_men);
     println!();
 
     loop {
@@ -390,8 +390,8 @@ fn play_tournament_game(spec1: &str, spec2: &str, rng: &mut Xorshift64, start_me
     let mut board = Board::new();
     let mut placed = 0;
     while placed < start_men {
-        let row = (rng.next() % WIDTH as u64) as usize;
-        let col = (rng.next() % LENGTH as u64) as usize;
+        let row = (rng.next() % 5) as usize + (START_ROW - 2);
+        let col = (rng.next() % 5) as usize + (START_COL - 2);
         let pos = Position::new(row, col);
         if board.get(pos) == Piece::Empty {
             board.set(pos, Piece::Man);
