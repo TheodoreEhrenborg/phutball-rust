@@ -479,3 +479,31 @@ unchanged.
 (*nnue-eval positioned between eval2 and eval4; exact rank vs eval2 not directly tested)
 
 **Conclusion: eval6:1000 remains the strongest engine. No change to website AI player needed.**
+
+---
+
+## Phase 8b: eval6 vs All Engines (2026-05-11)
+
+**Motivation:** Run eval6:1000 head-to-head against every other engine to confirm
+its dominance across the full field, not just vs eval5.
+
+**Setup:** 5x5 starting window (START_ROW±2, START_COL±2), start_men=4,
+confidence=0.9, max-games=30. All matchups on the engine-improvements branch.
+
+| Matchup | W / L / T | P(eval6 better) | Result |
+|---------|-----------|-----------------|--------|
+| eval6:1000 vs timed:1000    | 3W/0L/0T |  0.938 | eval6 wins |
+| eval6:1000 vs eval:1000     | 3W/0L/0T |  0.938 | eval6 wins |
+| eval6:1000 vs eval2:1000    | 3W/0L/1T |  0.938 | eval6 wins |
+| eval6:1000 vs eval4:1000    | 3W/0L/0T |  0.938 | eval6 wins |
+| eval6:1000 vs eval5:1000    | 3W/0L/2T |  0.938 | eval6 wins |
+| eval6:1000 vs mcts:1000     | 3W/0L/0T |  0.938 | eval6 wins |
+| eval6:1000 vs mcts-eval:1000| 3W/0L/0T |  0.938 | eval6 wins |
+| eval6:1000 vs mcts2:1000    | 3W/0L/0T |  0.938 | eval6 wins |
+| eval6:1000 vs beam-mcts:1000| 3W/0L/0T |  0.938 | eval6 wins |
+| eval6:1000 vs nnue-eval:1000| 3W/0L/0T |  0.938 | eval6 wins |
+
+**Conclusion:** eval6:1000 beats every other engine in the codebase at the 0.9
+confidence threshold. No losses in any matchup. The beam-search forward pruning
+(K=8 placements, all jumps) makes eval6 strictly dominant over all alternatives
+tested. eval6:1000 is confirmed as the unambiguous best engine.
