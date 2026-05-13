@@ -1,0 +1,18 @@
+[package]
+name = "phutball-wasm"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+yew = { version = "0.21", features = ["csr"] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+gloo = "0.11"
+web-sys = { version = "0.3", features = ["HtmlSelectElement", "HtmlInputElement", "Element", "DomRect", "InputEvent", "Event", "Window", "Location"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = { version = "0.2", features = ["js"] }
+phutball-core = { path = "../phutball-core" }

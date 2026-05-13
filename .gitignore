@@ -1,1 +1,13 @@
 /target
+.beads/
+CLAUDE.md
+CLAUDE.local.md
+*.dat
+*.bin
+
+# Gas Town (added by gt)
+.runtime/
+.claude/
+.logs/
+__pycache__/
+state.json

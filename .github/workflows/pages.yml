@@ -1,0 +1,35 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main, engine-improvements]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: 'latest'
+
+      - name: Build WASM
+        run: wasm-pack build phutball-wasm --target web
+
+      - name: Assemble deploy folder
+        run: |
+          mkdir -p deploy/wasm
+          cp docs/index.html deploy/
+          cp phutball-wasm/pkg/*.js phutball-wasm/pkg/*.wasm deploy/wasm/ 2>/dev/null || true
+          # pkg/ is the default wasm-pack output dir
+          ls -la deploy/wasm/
+          touch deploy/.nojekyll
+
+      - uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: deploy
+          branch: gh-pages
